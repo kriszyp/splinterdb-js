@@ -1,0 +1,9 @@
+version: V0.0.1
+date: 2022-04-18
+license_link: https://github.com/vmware/splinterdb/blob/main/LICENSE
+source:
+  - client: zip
+    file_link: https://github.com/vmware/splinterdb/archive/refs/heads/main.zip
+    file_name: main.zip
+    checksum: ''
+    size: ''

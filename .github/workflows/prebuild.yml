@@ -1,0 +1,162 @@
+name: Test and Prebuild
+on: [push]
+jobs:
+  build-test-macos:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: macos-11
+    steps:
+      - uses: actions/checkout@v2
+      - name: Setup node
+        uses: actions/setup-node@v2
+        with:
+          node-version: 16
+      - uses: denoland/setup-deno@v1
+        with:
+          deno-version: v1.18.0
+      - run: npm install
+      - run: npm run build
+      #- run: npm run deno-test
+      - run: npm test
+      - run: npm run prebuild-libc
+        if: startsWith(github.ref, 'refs/tags/')
+      - run: npm run prebuild-libc
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          PREBUILD_ARCH: arm64
+      - run: tar --create --format ustar --verbose --file=prebuild-darwin.tar -C prebuilds .
+        if: startsWith(github.ref, 'refs/tags/')
+      - name: Prebuild
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: prebuild-darwin.tar
+  build-test-win32:
+    #if: startsWith(github.ref, 'refs/tags/')
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Setup node
+        uses: actions/setup-node@v2
+        with:
+          node-version: 16
+      - run: npm install
+      - run: npm run build
+      - run: npm test
+      - run: npm run prebuildify
+        if: startsWith(github.ref, 'refs/tags/')
+      - run: npm run prebuildify
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          PREBUILD_ARCH: arm64
+      - run: tar --create --verbose --file=prebuild-win32.tar -C prebuilds .
+        if: startsWith(github.ref, 'refs/tags/')
+      - name: Prebuild
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: prebuild-win32.tar
+  build-centos-7:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-18.04
+    container: quay.io/pypa/manylinux2014_x86_64
+    steps:
+      - uses: actions/checkout@v2
+      - name: Setup node
+        uses: actions/setup-node@v2
+        with:
+          node-version: 14
+      - run: npm install
+      - run: npm run build
+      - run: npm run prebuild-libc
+      - run: ls prebuilds/linux-x64
+      #- run: cp prebuilds/linux-x64/node.abi93.glibc.node prebuilds/linux-x64/node.abi92.glibc.node
+      #- run: npm run prebuildify
+      #  env:
+      #    ENABLE_FAST_API_CALLS: true
+      - run: npm test
+      - run: tar --create --verbose --file=prebuild-linux.tar -C prebuilds .
+      - name: Prebuild
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: prebuild-linux.tar
+  build-debian-9:
+    runs-on: ubuntu-18.04
+    container: node:14-stretch
+    steps:
+      - uses: actions/checkout@v2
+      - uses: denoland/setup-deno@v1
+        with:
+          deno-version: v1.18.0
+      - run: npm install
+      - run: npm run build
+      #- run: npm run deno-test
+      - run: npm test
+  build-alpine:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-18.04
+    container: node:14-alpine
+    steps:
+      - run: apk add python3 py3-pip build-base git
+      - uses: actions/checkout@v2
+      - run: npm install --ignore-scripts
+      - run: wget https://musl.cc/aarch64-linux-musl-cross.tgz
+      - run: tar -xf aarch64-linux-musl-cross.tgz && pwd && ls
+      - run: npm run prebuild-libc-musl
+        env:
+          PREBUILD_LIBC: musl
+          PREBUILD_ARCH: arm64
+          CC: ${PWD}/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc
+          CXX: ${PWD}/aarch64-linux-musl-cross/bin/aarch64-linux-musl-g++
+      - run: wget https://musl.cc/armv7l-linux-musleabihf-cross.tgz
+      - run: tar -xf armv7l-linux-musleabihf-cross.tgz && pwd && ls
+      - run: npm run prebuild-libc-musl
+        env:
+          PREBUILD_LIBC: musl
+          PREBUILD_ARCH: arm
+          PREBUILD_ARMV: 7
+          CC: ${PWD}/armv7l-linux-musleabihf-cross/bin/armv7l-linux-musleabihf-gcc
+          CXX: ${PWD}/armv7l-linux-musleabihf-cross/bin/armv7l-linux-musleabihf-g++
+      - run: npm run prebuild-libc-musl
+        env:
+          PREBUILD_LIBC: musl
+      - run: npm run build
+      - run: npm test
+      - run: tar --create --verbose --file=prebuild-alpine.tar -C prebuilds .
+      - name: Prebuild
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: prebuild-alpine.tar
+  build-linux-arm:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-18.04
+    container: quay.io/pypa/manylinux_2_24_x86_64
+    steps:
+      - run: apt-get update
+      - run: apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf g++-aarch64-linux-gnu g++-arm-linux-gnueabihf
+      - run: ldd --version ldd
+      - uses: actions/checkout@v2
+      - name: Setup node
+        uses: actions/setup-node@v2
+        with:
+          node-version: 14
+      - run: npm install
+      - run: npm run prebuild-libc
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          PREBUILD_ARCH: arm64
+          CC: aarch64-linux-gnu-gcc
+          CXX: aarch64-linux-gnu-g++
+      - run: npm run prebuild-libc-arm7
+        env:
+          PREBUILD_ARCH: arm
+          PREBUILD_ARMV: 7
+          CC: arm-linux-gnueabihf-gcc
+          CXX: arm-linux-gnueabihf-g++
+      - run: tar --create --verbose --file=prebuild-linux-arm.tar -C prebuilds .
+      - name: Prebuild
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: prebuild-linux-arm.tar
