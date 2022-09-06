@@ -82,7 +82,9 @@ typedef struct splinterdb splinterdb;
 // The library will allocate and own the memory for splinterdb
 // and will free it on splinterdb_close().
 //
-// It is ok for the caller to stack-allocate cfg, since it is not retained
+// It is ok for the caller to stack-allocate cfg, since it is not retained.
+// But cfg->data_cfg will be referenced by the returned splinterdb object
+// So it must live at least as long as the splinterdb
 int
 splinterdb_create(const splinterdb_config *cfg, splinterdb **kvs);
 
@@ -91,7 +93,9 @@ splinterdb_create(const splinterdb_config *cfg, splinterdb **kvs);
 // The library will allocate and own the memory for splinterdb
 // and will free it on splinterdb_close().
 //
-// It is ok for the caller to stack-allocate cfg, since it is not retained
+// It is ok for the caller to stack-allocate cfg, since it is not retained.
+// But cfg->data_cfg will be referenced by the returned splinterdb object
+// So it must live at least as long as the splinterdb
 int
 splinterdb_open(const splinterdb_config *cfg, splinterdb **kvs);
 
@@ -150,7 +154,7 @@ splinterdb_update(const splinterdb *kvsb, slice key, slice delta);
 // lookups. It is not safe to use from multiple threads.
 typedef struct {
    char opaque[SPLINTERDB_LOOKUP_BUFSIZE];
-} splinterdb_lookup_result;
+} __attribute__((__aligned__(8))) splinterdb_lookup_result;
 
 // Initialize a lookup result object.
 //
@@ -159,6 +163,16 @@ typedef struct {
 // If the caller provides a buffer, that will be used, unless a lookup
 // requires a larger buffer, at which time the library will allocate.
 // Regardless, the library will never free a buffer supplied by the application.
+//
+// After this function returns, the caller must ensure that
+// 1. *result is only used in conjunction with the kvs
+//    Attempting to use one lookup_result with multiple instances of splinterdb
+//    may cause problems in future versions of splinterdb
+// 2. The lifetime of *result must not exceed the lifetime of kvs
+//    The result should be deinit'ed before calling splinterdb_close on kvs
+//
+// While the current version of SplinterDB does not rely on these rules, future
+// versions may store pointers to Splinter's own memory in the lookup_result.
 void
 splinterdb_lookup_result_init(const splinterdb         *kvs,        // IN
                               splinterdb_lookup_result *result,     // IN/OUT
@@ -177,9 +191,10 @@ bool
 splinterdb_lookup_found(const splinterdb_lookup_result *result); // IN
 
 // Decode the value from a found result
+//
+// Do not modify the memory pointed at by *value
 int
-splinterdb_lookup_result_value(const splinterdb               *kvs,
-                               const splinterdb_lookup_result *result, // IN
+splinterdb_lookup_result_value(const splinterdb_lookup_result *result, // IN
                                slice                          *value   // OUT
 );
 

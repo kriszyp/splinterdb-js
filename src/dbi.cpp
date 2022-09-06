@@ -141,7 +141,7 @@ Value DbiWrap::stat(const Napi::CallbackInfo& info) {
 int32_t DbiWrap::doGetByBinary(uint32_t keySize, uint32_t ifNotTxnId, int64_t txnAddress) {
 	char* keyBuffer = ew->keyBuffer;
 	MDB_txn* txn = txnAddress ? (MDB_txn*) txnAddress : ew->getReadTxn();
-	MDB_val key, data;
+	slice key, data;
 	key.mv_size = keySize;
 	key.mv_data = (void*) keyBuffer;
 	uint32_t* currentTxnId = (uint32_t*) (keyBuffer + 32);
@@ -201,8 +201,8 @@ NAPI_FUNCTION(getSharedByBinary) {
 	DbiWrap* dw = (DbiWrap*) i64;
 	uint32_t keySize;
 	GET_UINT32_ARG(keySize, 1);
-	MDB_val key;
-	MDB_val data;
+	slice key;
+	slice data;
 	key.mv_size = keySize;
 	key.mv_data = (void*) dw->ew->keyBuffer;
 	MDB_txn* txn = dw->ew->getReadTxn();
@@ -224,8 +224,8 @@ NAPI_FUNCTION(getStringByBinary) {
 	DbiWrap* dw = (DbiWrap*) i64;
 	uint32_t keySize;
 	GET_UINT32_ARG(keySize, 1);
-	MDB_val key;
-	MDB_val data;
+	slice key;
+	slice data;
 	key.mv_size = keySize;
 	key.mv_data = (void*) dw->ew->keyBuffer;
 	MDB_txn* txn = dw->ew->getReadTxn();
@@ -247,8 +247,8 @@ NAPI_FUNCTION(getStringByBinary) {
 int DbiWrap::prefetch(uint32_t* keys) {
 	MDB_txn* txn;
 	mdb_txn_begin(ew->env, nullptr, MDB_RDONLY, &txn);
-	MDB_val key;
-	MDB_val data;
+	slice key;
+	slice data;
 	unsigned int flags;
 	mdb_dbi_flags(txn, dbi, &flags);
 	bool dupSort = flags & MDB_DUPSORT;

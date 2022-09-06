@@ -31,7 +31,7 @@
 #include <napi.h>
 #include <node_api.h>
 
-#include "lmdb.h"
+#include "splinterdb/splinterdb.h"
 #include "lz4.h"
 #ifdef MDB_RPAGE_CACHE
 #include "chacha8.h"
@@ -145,16 +145,16 @@ class Compression;
 void setupExportMisc(Env env, Object exports);
 
 // Helper callback
-typedef void (*argtokey_callback_t)(MDB_val &key);
+typedef void (*argtokey_callback_t)(slice &key);
 
 void consoleLog(Value val);
 void consoleLog(const char *msg);
 void consoleLogN(int n);
 void setFlagFromValue(int *flags, int flag, const char *name, bool defaultValue, Object options);
-void writeValueToEntry(const Value &str, MDB_val *val);
+void writeValueToEntry(const Value &str, slice *val);
 LmdbKeyType keyTypeFromOptions(const Value &val, LmdbKeyType defaultKeyType = LmdbKeyType::DefaultKey);
-int getVersionAndUncompress(MDB_val &data, DbiWrap* dw);
-int compareFast(const MDB_val *a, const MDB_val *b);
+int getVersionAndUncompress(slice &data, DbiWrap* dw);
+int compareFast(const slice *a, const slice *b);
 Value setGlobalBuffer(const CallbackInfo& info);
 Value lmdbError(const CallbackInfo& info);
 napi_value createBufferForAddress(napi_env env, napi_callback_info info);
@@ -176,17 +176,17 @@ Value enableDirectV8(const CallbackInfo& info);
 #endif
 #endif
 
-bool valToBinaryFast(MDB_val &data, DbiWrap* dw);
-Value valToUtf8(Env env, MDB_val &data);
-Value valToString(MDB_val &data);
-Value valToStringUnsafe(MDB_val &data);
-Value valToBinary(MDB_val &data);
-Value valToBinaryUnsafe(MDB_val &data, DbiWrap* dw, Env env);
+bool valToBinaryFast(slice &data, DbiWrap* dw);
+Value valToUtf8(Env env, slice &data);
+Value valToString(slice &data);
+Value valToStringUnsafe(slice &data);
+Value valToBinary(slice &data);
+Value valToBinaryUnsafe(slice &data, DbiWrap* dw, Env env);
 
 int putWithVersion(MDB_txn* txn,
 		MDB_dbi	 dbi,
-		MDB_val *   key,
-		MDB_val *   data,
+		slice *   key,
+		slice *   data,
 		unsigned int	flags, double version);
 
 Napi::Value throwLmdbError(Napi::Env env, int rc);
@@ -415,7 +415,7 @@ public:
 	static napi_value write(napi_env env, napi_callback_info info);
 	static napi_value onExit(napi_env env, napi_callback_info info);
 	Napi::Value resetCurrentReadTxn(const CallbackInfo& info);
-	static int32_t toSharedBuffer(MDB_env* env, uint32_t* keyBuffer, MDB_val data);
+	static int32_t toSharedBuffer(MDB_env* env, uint32_t* keyBuffer, slice data);
 };
 
 const int TXN_ABORTABLE = 1;
@@ -553,8 +553,8 @@ public:
 	// compression acceleration (defaults to 1)
 	int acceleration;
 	static thread_local LZ4_stream_t* stream;
-	void decompress(MDB_val& data, bool &isValid, bool canAllocate);
-	argtokey_callback_t compress(MDB_val* value, argtokey_callback_t freeValue);
+	void decompress(slice& data, bool &isValid, bool canAllocate);
+	argtokey_callback_t compress(slice* value, argtokey_callback_t freeValue);
 	int compressInstruction(EnvWrap* env, double* compressionAddress);
 	Napi::Value ctor(const CallbackInfo& info);
 	Napi::Value setBuffer(const CallbackInfo& info);
@@ -575,7 +575,7 @@ class CursorWrap : public ObjectWrap<CursorWrap> {
 private:
 
 	// Key/data pair where the cursor is at, and ending key
-	MDB_val key, data, endKey;
+	slice key, data, endKey;
 	// Free function for the current key
 	argtokey_callback_t freeKey;
 
@@ -612,7 +612,7 @@ public:
 	*/
 	Napi::Value del(const CallbackInfo& info);
 
-	int returnEntry(int lastRC, MDB_val &key, MDB_val &data);
+	int returnEntry(int lastRC, slice &key, slice &data);
 	int32_t doPosition(uint32_t offset, uint32_t keySize, uint64_t endKeyAddress);
 	//Value getStringByBinary(const CallbackInfo& info);
 };

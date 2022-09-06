@@ -16,7 +16,7 @@ Object InitAll(Napi::Env env, Object exports) {
 	// Initializes the module
 	// Export Env as constructor for EnvWrap
 	EnvWrap::setupExports(env, exports);
-
+/*
 	// Export Cursor as constructor for CursorWrap
 	CursorWrap::setupExports(env, exports);
 	TxnWrap::setupExports(env, exports);
@@ -28,7 +28,7 @@ Object InitAll(Napi::Env env, Object exports) {
 	setupExportMisc(env, exports);
 	if (Logging::debugLogging)
 		fprintf(stderr, "Finished initialization\n");
-	return exports;
+	return exports;*/
 }
 NAPI_MODULE_INIT() {
 	Value exp = Value::From(env, exports);

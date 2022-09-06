@@ -192,10 +192,10 @@ class ReadWorker : public AsyncWorker {
 		uint32_t* gets = start;
 		while((instruction = std::atomic_exchange((std::atomic<uint32_t>*)(gets++), (uint32_t)0xf0000000))) {
 
-			MDB_val key;
+			slice key;
 			key.mv_size = instruction & 0xffff;
 			MDB_dbi dbi = (MDB_dbi) *(gets++);
-			MDB_val data;
+			slice data;
 			MDB_txn* txn = (MDB_txn*) (size_t) *((double*)gets);
 			gets += 2;
 			
@@ -276,7 +276,7 @@ MDB_txn* EnvWrap::getReadTxn() {
 }
 
 #ifdef MDB_RPAGE_CACHE
-static int encfunc(const MDB_val* src, MDB_val* dst, const MDB_val* key, int encdec)
+static int encfunc(const slice* src, slice* dst, const slice* key, int encdec)
 {
 	chacha8(src->mv_data, src->mv_size, (uint8_t*) key[0].mv_data, (uint8_t*) key[1].mv_data, (char*)dst->mv_data);
 	return 0;
@@ -360,74 +360,22 @@ int EnvWrap::openEnv(int flags, int jsFlags, const char* path, char* keyBuffer, 
 	this->compression = compression;
 	this->jsFlags = jsFlags;
 
-	int rc;
-	rc = mdb_env_set_maxdbs(env, maxDbs);
-	if (rc) goto fail;
-	rc = mdb_env_set_maxreaders(env, maxReaders);
-	if (rc) goto fail;
-	rc = mdb_env_set_mapsize(env, mapSize);
-	if (rc) goto fail;
-	#ifdef MDB_RPAGE_CACHE
-	if (pageSize)
-	   rc = mdb_env_set_pagesize(env, pageSize);
-	if (rc) goto fail;
-	#endif
-	if ((size_t) encryptionKey > 100) {
-		MDB_val enckey;
-		enckey.mv_data = encryptionKey;
-		enckey.mv_size = 32;
-		#ifdef MDB_RPAGE_CACHE
-		rc = mdb_env_set_encrypt(env, encfunc, &enckey, 0);
-		#else
-		rc = -1;
-		#endif
-		if (rc != 0) goto fail;
-	}
 
-	if (flags & MDB_NOLOCK) {
-		fprintf(stderr, "You chose to use MDB_NOLOCK which is not officially supported by node-lmdb. You have been warned!\n");
-	}
-	#ifdef MDB_OVERLAPPINGSYNC
-	if (flags & MDB_OVERLAPPINGSYNC) {
-		flags |= MDB_PREVSNAPSHOT;
-	}
-	mdb_env_set_check_fd(env, checkExistingEnvs);
-	#endif
+// Initialize data configuration, using default key-comparison handling.
+	data_config splinter_data_cfg;
+	default_data_config_init(USER_MAX_KEY_SIZE, &splinter_data_cfg);
 
-	// Set MDB_NOTLS to enable multiple read-only transactions on the same thread (in this case, the nodejs main thread)
-	flags |= MDB_NOTLS;
-	// TODO: make file attributes configurable
-	// *String::Utf8Value(Isolate::GetCurrent(), path)
-	pthread_mutex_lock(envTracking->envsLock);
-	rc = mdb_env_open(env, path, flags, 0664);
+	// Basic configuration of a SplinterDB instance
+	splinterdb_config splinterdb_cfg;
+	memset(&splinterdb_cfg, 0, sizeof(splinterdb_cfg));
+	splinterdb_cfg.filename	= path;
+	splinterdb_cfg.disk_size  = mapSize;
+	splinterdb_cfg.cache_size = (10 * 1024 * 1024);
+	splinterdb_cfg.data_cfg	= &splinter_data_cfg;
 
-	if (rc != 0) {
-		if (rc == EXISTING_ENV_FOUND) {
-			mdb_env_close(env);
-			env = foundEnv;
-		} else {
-			closeEnv(true);
-			pthread_mutex_unlock(envTracking->envsLock);
-			goto fail;
-		}
-	}
-	mdb_env_get_flags(env, (unsigned int*) &flags);
-	if ((jsFlags & DELETE_ON_CLOSE)
-	#ifdef MDB_OVERLAPPINGSYNC
-	 	|| (flags & MDB_OVERLAPPINGSYNC)
-	#endif
-		) {
-		if (!openEnvWraps) {
-			openEnvWraps = new std::vector<EnvWrap*>;
-			napi_add_env_cleanup_hook(napiEnv, cleanupEnvWraps, nullptr);
-		}
-		openEnvWraps->push_back(this);
-	}
-	pthread_mutex_unlock(envTracking->envsLock);
-	return 0;
+	splinterdb *spl_handle = NULL; // To a running SplinterDB instance
 
-	fail:
-	env = nullptr;
+	int rc = splinterdb_create(&splinterdb_cfg, &spl_handle);
 	return rc;
 }
 Napi::Value EnvWrap::getMaxKeySize(const CallbackInfo& info) {
@@ -580,7 +528,7 @@ NAPI_FUNCTION(directWrite) {
 }
 thread_local int nextSharedId = 1;
 
-int32_t EnvWrap::toSharedBuffer(MDB_env* env, uint32_t* keyBuffer,  MDB_val data) {
+int32_t EnvWrap::toSharedBuffer(MDB_env* env, uint32_t* keyBuffer,  slice data) {
 	unsigned int flags;
 	mdb_env_get_flags(env, (unsigned int*) &flags);
 	#ifdef MDB_RPAGE_CACHE

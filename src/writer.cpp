@@ -175,7 +175,7 @@ int WriteWorker::WaitForCallbacks(MDB_txn** txn, bool allowCommit, uint32_t* tar
 	return 0;
 }
 int WriteWorker::DoWrites(MDB_txn* txn, EnvWrap* envForTxn, uint32_t* instruction, WriteWorker* worker) {
-	MDB_val key, value;
+	slice key, value;
 	int rc = 0;
 	int conditionDepth = 0;
 	int validatedDepth = 0;
@@ -229,7 +229,7 @@ next_inst:	start = instruction++;
 			if (flags & CONDITIONAL_VERSION) {
 				conditionalVersion = *((double*) instruction);
 				instruction += 2;
-				MDB_val conditionalValue;
+				slice conditionalValue;
 				rc = mdb_get(txn, dbi, &key, &conditionalValue);
 				if (rc) {
 				    // not found counts as version 0, so this is acceptable for conditional less than,

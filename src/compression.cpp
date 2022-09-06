@@ -40,7 +40,7 @@ Napi::Value Compression::setBuffer(const CallbackInfo& info) {
 	this->dictionarySize = info[3].As<Number>();
 	return info.Env().Undefined();
 }
-void Compression::decompress(MDB_val& data, bool &isValid, bool canAllocate) {
+void Compression::decompress(slice& data, bool &isValid, bool canAllocate) {
 	uint32_t uncompressedLength;
 	int compressionHeaderSize;
 	uint32_t compressedLength = data.mv_size;
@@ -88,7 +88,7 @@ void Compression::decompress(MDB_val& data, bool &isValid, bool canAllocate) {
 }
 
 int Compression::compressInstruction(EnvWrap* env, double* compressionAddress) {
-	MDB_val value;
+	slice value;
 	value.mv_data = (void*)((size_t) * (compressionAddress - 1));
 	value.mv_size = *(((uint32_t*)compressionAddress) - 3);
 	argtokey_callback_t compressedData = compress(&value, nullptr);
@@ -110,7 +110,7 @@ int Compression::compressInstruction(EnvWrap* env, double* compressionAddress) {
 	}
 }
 
-argtokey_callback_t Compression::compress(MDB_val* value, void (*freeValue)(MDB_val&)) {
+argtokey_callback_t Compression::compress(slice* value, void (*freeValue)(slice&)) {
 	size_t dataLength = value->mv_size;
 	char* data = (char*)value->mv_data;
 	if (value->mv_size < compressionThreshold && !(value->mv_size > 0 && ((uint8_t*)data)[0] >= 250))
@@ -145,7 +145,7 @@ argtokey_callback_t Compression::compress(MDB_val* value, void (*freeValue)(MDB_
 		}
 		value->mv_size = compressedSize + prefixSize;
 		value->mv_data = compressed;
-		return ([](MDB_val &value) -> void {
+		return ([](slice &value) -> void {
 			delete[] (char*)value.mv_data;
 		});
 	}

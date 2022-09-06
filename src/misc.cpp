@@ -40,18 +40,18 @@ void setFlagFromValue(int *flags, int flag, const char *name, bool defaultValue,
 		*flags |= flag;
 }
 /*
-Value valToStringUnsafe(MDB_val &data) {
+Value valToStringUnsafe(slice &data) {
 	auto resource = new CustomExternalOneByteStringResource(&data);
 	auto str = Nan::New<v8::String>(resource);
 
 	return str.ToLocalChecked();
 }*/
 
-Value valToUtf8(Env env, MDB_val &data) {
+Value valToUtf8(Env env, slice &data) {
 	return String::New(env, (const char*) data.mv_data, data.mv_size);
 }
 
-Value valToString(Env env, MDB_val &data) {
+Value valToString(Env env, slice &data) {
 	// UTF-16 buffer
 	const uint16_t *buffer = reinterpret_cast<const uint16_t*>(data.mv_data);
 	// Number of UTF-16 code points
@@ -66,7 +66,7 @@ Value valToString(Env env, MDB_val &data) {
 	return String::New(env, (const char16_t*)data.mv_data, length);
 }
 
-bool valToBinaryFast(MDB_val &data, DbiWrap* dw) {
+bool valToBinaryFast(slice &data, DbiWrap* dw) {
 	Compression* compression = dw->compression;
 	if (compression) {
 		if (data.mv_data == compression->decompressTarget) {
@@ -88,13 +88,13 @@ bool valToBinaryFast(MDB_val &data, DbiWrap* dw) {
 	}
 	return true;
 }
-Value valToBinaryUnsafe(MDB_val &data, DbiWrap* dw, Env env) {
+Value valToBinaryUnsafe(slice &data, DbiWrap* dw, Env env) {
 	valToBinaryFast(data, dw);
 	return Number::New(env, data.mv_size);
 }
 
 
-int getVersionAndUncompress(MDB_val &data, DbiWrap* dw) {
+int getVersionAndUncompress(slice &data, DbiWrap* dw) {
 	//fprintf(stdout, "uncompressing %u\n", compressionThreshold);
 	unsigned char* charData = (unsigned char*) data.mv_data;
 	if (dw->hasVersions) {
@@ -180,8 +180,8 @@ Napi::Value throwError(Napi::Env env, const char* message) {
 
 int putWithVersion(MDB_txn *   txn,
 		MDB_dbi	 dbi,
-		MDB_val *   key,
-		MDB_val *   data,
+		slice *   key,
+		slice *   data,
 		unsigned int	flags, double version) {
 	// leave 8 header bytes available for version and copy in with reserved memory
 	char* sourceData = (char*) data->mv_data;

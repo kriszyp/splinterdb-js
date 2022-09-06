@@ -50,7 +50,7 @@ int32_t iterateFast(Local<v8::Object> instance, double cwPointer) {
 	CursorWrap* cw = (CursorWrap*) (size_t) cwPointer;
 	DbiWrap* dw = cw->dw;
 	dw->getFast = true;
-	MDB_val key, data;
+	slice key, data;
 	int rc = mdb_cursor_get(cw->cursor, &key, &data, cw->iteratingOp);
 	return cw->returnEntry(rc, key, data);
 }
@@ -59,7 +59,7 @@ void iterateV8(const FunctionCallbackInfo<v8::Value>& info) {
 	CursorWrap* cw = (CursorWrap*) (size_t) info[0]->NumberValue(isolate->GetCurrentContext()).FromJust();
 	DbiWrap* dw = cw->dw;
 	dw->getFast = true;
-	MDB_val key, data;
+	slice key, data;
 	int rc = mdb_cursor_get(cw->cursor, &key, &data, cw->iteratingOp);
 	info.GetReturnValue().Set(v8::Number::New(isolate, cw->returnEntry(rc, key, data)));
 }

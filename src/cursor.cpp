@@ -76,7 +76,7 @@ Value CursorWrap::del(const CallbackInfo& info) {
 	}
 	return info.Env().Undefined();
 }
-int CursorWrap::returnEntry(int lastRC, MDB_val &key, MDB_val &data) {
+int CursorWrap::returnEntry(int lastRC, slice &key, slice &data) {
 	if (lastRC) {
 		if (lastRC == MDB_NOTFOUND)
 			return 0;
@@ -120,7 +120,7 @@ int CursorWrap::returnEntry(int lastRC, MDB_val &key, MDB_val &data) {
 const int START_ADDRESS_POSITION = 4064;
 int32_t CursorWrap::doPosition(uint32_t offset, uint32_t keySize, uint64_t endKeyAddress) {
 	//char* keyBuffer = dw->ew->keyBuffer;
-	MDB_val key, data;
+	slice key, data;
 	int rc;
 	if (flags & RENEW_CURSOR) { // TODO: check the txn_id to determine if we need to renew
 		rc = mdb_cursor_renew(txn = dw->ew->getReadTxn(), cursor);
@@ -153,7 +153,7 @@ int32_t CursorWrap::doPosition(uint32_t offset, uint32_t keySize, uint64_t endKe
 			uint32_t* startValueBuffer = (uint32_t*)(size_t)(*(double*)(dw->ew->keyBuffer + START_ADDRESS_POSITION));
 			data.mv_size = endKeyAddress ? *((uint32_t*)startValueBuffer) : 0;
 			data.mv_data = startValueBuffer + 1;
-			MDB_val startValue;
+			slice startValue;
 			if (flags & EXCLUSIVE_START)
 				startValue = data; // save it for comparison
 			if (flags & REVERSE) {// reverse through values
@@ -193,7 +193,7 @@ int32_t CursorWrap::doPosition(uint32_t offset, uint32_t keySize, uint64_t endKe
 				}
 			}
 		} else {
-			MDB_val firstKey;
+			slice firstKey;
 			if (flags & EXCLUSIVE_START)
 				firstKey = key; // save it for comparison
 			if (flags & REVERSE) {// reverse
@@ -292,7 +292,7 @@ NAPI_FUNCTION(iterate) {
 	ARGS(1)
     GET_INT64_ARG(0);
     CursorWrap* cw = (CursorWrap*) i64;
-	MDB_val key, data;
+	slice key, data;
 	int rc = mdb_cursor_get(cw->cursor, &key, &data, cw->iteratingOp);
 	RETURN_INT32(cw->returnEntry(rc, key, data));
 }
@@ -301,7 +301,7 @@ int32_t iterateFFI(double cwPointer) {
 	CursorWrap* cw = (CursorWrap*) (size_t) cwPointer;
 	DbiWrap* dw = cw->dw;
 	dw->getFast = true;
-	MDB_val key, data;
+	slice key, data;
 	int rc = mdb_cursor_get(cw->cursor, &key, &data, cw->iteratingOp);
 	return cw->returnEntry(rc, key, data);
 }
@@ -311,7 +311,7 @@ NAPI_FUNCTION(getCurrentValue) {
 	ARGS(1)
     GET_INT64_ARG(0);
     CursorWrap* cw = (CursorWrap*) i64;
-	MDB_val key, data;
+	slice key, data;
 	int rc = mdb_cursor_get(cw->cursor, &key, &data, MDB_GET_CURRENT);
 	RETURN_INT32(cw->returnEntry(rc, key, data));
 }
@@ -323,7 +323,7 @@ NAPI_FUNCTION(getCurrentShared) {
 	ARGS(1)
     GET_INT64_ARG(0);
     CursorWrap* cw = (CursorWrap*) i64;
-	MDB_val key, data;
+	slice key, data;
 	int rc = mdb_cursor_get(cw->cursor, &key, &data, MDB_GET_CURRENT);
 	if (rc)
 		RETURN_INT32(cw->returnEntry(rc, key, data));

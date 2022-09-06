@@ -29,24 +29,20 @@
     {
       "target_name": "splinterdb",
       "sources": [
-        "dependencies/splinterdb/src/btree.c",
+        "dependencies/splinterdb/src/*.c",
         "dependencies/lz4/lib/lz4.h",
         "dependencies/lz4/lib/lz4.c",
-        "src/writer.cpp",
         "src/env.cpp",
-        "src/compression.cpp",
-        "src/ordered-binary.cpp",
-        "src/misc.cpp",
-        "src/txn.cpp",
-        "src/dbi.cpp",
-        "src/cursor.cpp",
-        "src/v8-functions.cpp"
       ],
       "include_dirs": [
         "<!(node -p \"require('node-addon-api').include_dir\")",
+        "dependencies/splinterdb/include",
+        "dependencies/splinterdb/src",
+        "dependencies/splinterdb/src/platform_linux",
+        "dependencies/xxHash",
         "dependencies/lz4/lib"
       ],
-      "defines": ["MDB_MAXKEYSIZE=0", "NAPI_DISABLE_CPP_EXCEPTIONS" ],
+      "defines": ["SPLINTERDB_PLATFORM_DIR=platform_linux", "NAPI_DISABLE_CPP_EXCEPTIONS" ],
       "conditions": [
         ["OS=='linux'", {
           "variables": {

@@ -165,6 +165,10 @@ typedef struct ONDISK {
    uint8 data[0];
 } var_len_key_encoding;
 
+static_assert((MAX_KEY_SIZE >= 8), "MAX_KEY_SIZE must be at least 8 bytes");
+static_assert((MAX_KEY_SIZE <= 105),
+              "Keys larger than 105 bytes are currently not supported");
+
 static_assert((SPLINTERDB_MAX_KEY_SIZE + sizeof(var_len_key_encoding)
                == MAX_KEY_SIZE),
               "Variable-length key encoding header size mismatch");
@@ -258,7 +262,7 @@ splinterdb_shim_key_to_string(const data_config *cfg,
 
 
 // create a shim data_config that handles variable-length key encoding
-// the output retains a reference to app_cfg (via the context field)
+// the output retains a reference to app_cfg
 // so the lifetime of app_cfg must be at least as long as out_shim
 static int
 splinterdb_shim_data_config(const data_config *app_cfg,
@@ -307,6 +311,9 @@ splinterdb_shim_data_config(const data_config *app_cfg,
  *
  *      Translate splinterdb_config to configs for individual subsystems.
  *
+ *      The resulting splinterdb object will retain a reference to data_config
+ *      So kvs_cfg->data_config must live at least that long.
+ *
  * Results:
  *      STATUS_OK on success, appropriate error on failure.
  *
@@ -339,6 +346,8 @@ splinterdb_init_config(const splinterdb_config *kvs_cfg, // IN
    memcpy(&cfg, kvs_cfg, sizeof(cfg));
    splinterdb_config_set_defaults(&cfg);
 
+   // this line carries a reference, so kvs_cfg->data_cfg must live
+   // at least as long as kvs does
    platform_assert(
       0 == splinterdb_shim_data_config(kvs_cfg->data_cfg, &kvs->shim_data_cfg),
       "error shimming data_config.  This is probably an invalid data_config");
@@ -470,7 +479,6 @@ splinterdb_create_or_open(const splinterdb_config *kvs_cfg,      // IN
                             (io_handle *)&kvs->io_handle,
                             (allocator *)&kvs->allocator_handle,
                             "splinterdb",
-                            kvs->task_sys,
                             kvs->heap_handle,
                             kvs->heap_id,
                             platform_get_module_id());
@@ -736,6 +744,10 @@ _Static_assert(sizeof(_splinterdb_lookup_result)
                   <= sizeof(splinterdb_lookup_result),
                "sizeof(splinterdb_lookup_result) is too small");
 
+_Static_assert(alignof(splinterdb_lookup_result)
+                  == alignof(_splinterdb_lookup_result),
+               "mismatched alignment for splinterdb_lookup_result");
+
 void
 splinterdb_lookup_result_init(const splinterdb         *kvs,        // IN
                               splinterdb_lookup_result *result,     // IN/OUT
@@ -767,8 +779,7 @@ splinterdb_lookup_found(const splinterdb_lookup_result *result) // IN
 }
 
 int
-splinterdb_lookup_result_value(const splinterdb               *kvs,
-                               const splinterdb_lookup_result *result, // IN
+splinterdb_lookup_result_value(const splinterdb_lookup_result *result, // IN
                                slice                          *value)
 {
    _splinterdb_lookup_result *_result = (_splinterdb_lookup_result *)result;
