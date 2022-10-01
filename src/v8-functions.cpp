@@ -1,4 +1,4 @@
-#include "lmdb-js.h"
+#include "splinterdb-js.h"
 #if ENABLE_V8_API
 #include <string.h>
 #include <stdio.h>

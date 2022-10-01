@@ -731,23 +731,6 @@ splinterdb_update(const splinterdb *kvsb, slice key, slice update)
    return splinterdb_insert_message(kvsb, key, msg);
 }
 
-/*
- *-----------------------------------------------------------------------------
- * _splinterdb_lookup_result structure --
- *-----------------------------------------------------------------------------
- */
-typedef struct {
-   merge_accumulator value;
-} _splinterdb_lookup_result;
-
-_Static_assert(sizeof(_splinterdb_lookup_result)
-                  <= sizeof(splinterdb_lookup_result),
-               "sizeof(splinterdb_lookup_result) is too small");
-
-_Static_assert(alignof(splinterdb_lookup_result)
-                  == alignof(_splinterdb_lookup_result),
-               "mismatched alignment for splinterdb_lookup_result");
-
 void
 splinterdb_lookup_result_init(const splinterdb         *kvs,        // IN
                               splinterdb_lookup_result *result,     // IN/OUT

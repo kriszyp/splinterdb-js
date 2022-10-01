@@ -29,7 +29,8 @@
     {
       "target_name": "splinterdb",
       "sources": [
-        "dependencies/splinterdb/src/*.c",
+        "dependencies/splinterdb/src/util.c",
+        "src/splinterdb-js.cpp",
         "dependencies/lz4/lib/lz4.h",
         "dependencies/lz4/lib/lz4.c",
         "src/env.cpp",

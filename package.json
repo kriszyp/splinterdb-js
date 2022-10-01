@@ -51,8 +51,8 @@
   },
   "scripts": {
     "install": "node-gyp-build-optional-packages",
-    "build": "node-gyp configure && node-gyp build && rollup -c",
-    "rebuild": "node-gyp build && rollup -c",
+    "build": "node-gyp --debug configure && node-gyp --debug build && rollup -c",
+    "rebuild": "node-gyp --debug build && rollup -c",
     "build-js": "rollup -c",
     "prepare": "rollup -c",
     "before-publish": "rollup -c && prebuildify-ci download && prebuildify-platform-packages --target 16.14.0 && prebuildify-platform-packages --target 14.19.1 && prebuildify-platform-packages --target 18.0.0 && set ENABLE_V8_FUNCTIONS=false&& prebuildify-platform-packages --napi --platform-packages --target 16.14.0 && node util/set-optional-deps.cjs && npm run test",

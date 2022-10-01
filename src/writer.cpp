@@ -11,7 +11,7 @@
 8 bytes (optional): version
 inline value?
 */
-#include "lmdb-js.h"
+#include "splinterdb-js.h"
 #include <atomic>
 #include <ctime>
 #ifndef _WIN32

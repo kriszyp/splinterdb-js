@@ -1,4 +1,4 @@
-#include "lmdb-js.h"
+#include "splinterdb-js.h"
 #include <string.h>
 
 using namespace Napi;

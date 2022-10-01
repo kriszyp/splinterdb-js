@@ -31,16 +31,16 @@
 #include <napi.h>
 #include <node_api.h>
 
-#include "splinterdb/splinterdb.h"
+#include "splinterdb/transaction.h"
+#include "splinterdb/public_util.h"
 #include "lz4.h"
-#ifdef MDB_RPAGE_CACHE
-#include "chacha8.h"
-#endif
 
 using namespace Napi;
 
 // set the threshold of when to use shared buffers (for uncompressed entries larger than this value)
 const size_t SHARED_BUFFER_THRESHOLD = 0x4000;
+typedef int txn_t;
+typedef int dbi_t;
 
 #ifndef __CPTHREAD_H__
 #define __CPTHREAD_H__
@@ -58,9 +58,6 @@ typedef void pthread_condattr_t;
 typedef HANDLE pthread_t;
 typedef CONDITION_VARIABLE pthread_cond_t;
 
-#endif
-#ifndef mdb_size_t
-typedef size_t mdb_size_t;
 #endif
 
 #define NAPI_FUNCTION(name) napi_value name(napi_env env, napi_callback_info info)
@@ -134,9 +131,9 @@ enum class KeyCreation {
 	InArray = 2,
 };
 const int THEAD_MEMORY_THRESHOLD = 4000;
+#define USER_MAX_KEY_SIZE ((int)100)
 
 class TxnWrap;
-class DbiWrap;
 class EnvWrap;
 class CursorWrap;
 class Compression;
@@ -153,7 +150,7 @@ void consoleLogN(int n);
 void setFlagFromValue(int *flags, int flag, const char *name, bool defaultValue, Object options);
 void writeValueToEntry(const Value &str, slice *val);
 LmdbKeyType keyTypeFromOptions(const Value &val, LmdbKeyType defaultKeyType = LmdbKeyType::DefaultKey);
-int getVersionAndUncompress(slice &data, DbiWrap* dw);
+int getVersionAndUncompress(slice &data, EnvWrap* ew);
 int compareFast(const slice *a, const slice *b);
 Value setGlobalBuffer(const CallbackInfo& info);
 Value lmdbError(const CallbackInfo& info);
@@ -176,15 +173,14 @@ Value enableDirectV8(const CallbackInfo& info);
 #endif
 #endif
 
-bool valToBinaryFast(slice &data, DbiWrap* dw);
+bool valToBinaryFast(slice &data, EnvWrap* ew);
 Value valToUtf8(Env env, slice &data);
 Value valToString(slice &data);
 Value valToStringUnsafe(slice &data);
 Value valToBinary(slice &data);
-Value valToBinaryUnsafe(slice &data, DbiWrap* dw, Env env);
+Value valToBinaryUnsafe(slice &data, EnvWrap* ew, Env env);
 
-int putWithVersion(MDB_txn* txn,
-		MDB_dbi	 dbi,
+int putWithVersion(txn_t* txn,
 		slice *   key,
 		slice *   data,
 		unsigned int	flags, double version);
@@ -193,12 +189,11 @@ Napi::Value throwLmdbError(Napi::Env env, int rc);
 Napi::Value throwError(Napi::Env env, const char* message);
 
 class TxnWrap;
-class DbiWrap;
 class EnvWrap;
 class CursorWrap;
 class SharedEnv {
   public:
-	MDB_env* env;
+	splinterdb* env;
 	uint64_t dev;
 	uint64_t inode;
 	int count;
@@ -214,12 +209,12 @@ const int DELETE_ON_CLOSE = 2;
 
 class WriteWorker {
   public:
-	WriteWorker(MDB_env* env, EnvWrap* envForTxn, uint32_t* instructions);
+	WriteWorker(splinterdb* env, EnvWrap* envForTxn, uint32_t* instructions);
 	void Write();
-	MDB_txn* txn;
-	MDB_txn* AcquireTxn(int* flags);
+	txn_t* txn;
+	txn_t* AcquireTxn(int* flags);
 	void UnlockTxn();
-	int WaitForCallbacks(MDB_txn** txn, bool allowCommit, uint32_t* target);
+	int WaitForCallbacks(txn_t** txn, bool allowCommit, uint32_t* target);
 	virtual void ReportError(const char* error);
 	virtual void SendUpdate();
 	int interruptionStatus;
@@ -229,12 +224,12 @@ class WriteWorker {
 	virtual ~WriteWorker();
 	uint32_t* instructions;
 	int progressStatus;
-	MDB_env* env;
-	static int DoWrites(MDB_txn* txn, EnvWrap* envForTxn, uint32_t* instruction, WriteWorker* worker);
+	splinterdb* env;
+	static int DoWrites(txn_t* txn, EnvWrap* envForTxn, uint32_t* instruction, WriteWorker* worker);
 };
 class AsyncWriteWorker : public WriteWorker, public AsyncProgressWorker<char> {
   public:
-	AsyncWriteWorker(MDB_env* env, EnvWrap* envForTxn, uint32_t* instructions, const Function& callback);
+	AsyncWriteWorker(splinterdb* env, EnvWrap* envForTxn, uint32_t* instructions, const Function& callback);
 	void Execute(const AsyncProgressWorker::ExecutionProgress& execution);
 	void OnProgress(const char* data, size_t count);
 	void OnOK();
@@ -245,10 +240,10 @@ class AsyncWriteWorker : public WriteWorker, public AsyncProgressWorker<char> {
 };
 class TxnTracked {
   public:
-	TxnTracked(MDB_txn *txn, unsigned int flags);
+	TxnTracked(txn_t *txn, unsigned int flags);
 	~TxnTracked();
 	unsigned int flags;
-	MDB_txn *txn;
+	txn_t *txn;
 	TxnTracked *parent;
 };
 
@@ -257,7 +252,7 @@ typedef void* (get_shared_buffers_t)();
 /*
 	`Env`
 	Represents a database environment.
-	(Wrapper for `MDB_env`)
+	(Wrapper for `splinterdb`)
 */
 typedef struct env_tracking_t {
 	pthread_mutex_t* envsLock;
@@ -268,7 +263,7 @@ typedef struct env_tracking_t {
 typedef struct buffer_info_t {
 	uint32_t id;
 	size_t end;
-	MDB_env* env;
+	splinterdb* env;
 	napi_ref ref;
 } buffer_info_t;
 class EnvWrap : public ObjectWrap<EnvWrap> {
@@ -287,13 +282,12 @@ private:
    static void cleanupEnvWraps(void* data);
 
 	friend class TxnWrap;
-	friend class DbiWrap;
 
 public:
 	EnvWrap(const CallbackInfo&);
 	~EnvWrap();
 	// The wrapped object
-	MDB_env *env;
+	splinterdb *env;
 	// Current write transaction
 	static thread_local std::unordered_map<void*, buffer_info_t>* sharedBuffers;
 	static env_tracking_t* envTracking;
@@ -303,43 +297,20 @@ public:
 	pthread_cond_t* writingCond;
 	std::vector<AsyncWorker*> workers;
 
-	MDB_txn* currentReadTxn;
+	txn_t* currentReadTxn;
 	WriteWorker* writeWorker;
 	bool readTxnRenewed;
 	unsigned int jsFlags;
 	char* keyBuffer;
 	int pageSize;
 	time_t lastReaderCheck;
-	MDB_txn* getReadTxn();
+	txn_t* getReadTxn();
 
 	// Sets up exports for the Env constructor
 	static void setupExports(Napi::Env env, Object exports);
 	void closeEnv(bool hasLock = false);
 	int openEnv(int flags, int jsFlags, const char* path, char* keyBuffer, Compression* compression, int maxDbs,
-		int maxReaders, mdb_size_t mapSize, int pageSize, char* encryptionKey);
-	
-	/*
-		Gets statistics about the database environment.
-	*/
-	Napi::Value stat(const CallbackInfo& info);
-
-	/*
-		Gets statistics about the free space database
-	*/
-	Napi::Value freeStat(const CallbackInfo& info);
-	
-	/*
-		Gets information about the database environment.
-	*/
-	Napi::Value info(const CallbackInfo& info);
-	/*
-		Check for stale readers
-	*/
-	Napi::Value readerCheck(const CallbackInfo& info);
-	/*
-		Print a list of readers
-	*/
-	Napi::Value readerList(const CallbackInfo& info);
+		int maxReaders, size_t mapSize, int pageSize, char* encryptionKey);
 
 	/*
 		Opens the database environment with the specified options. The options will be used to configure the environment before opening it.
@@ -357,51 +328,7 @@ public:
 		* path: path to the database environment
 	*/
 	Napi::Value open(const CallbackInfo& info);
-	Napi::Value getMaxKeySize(const CallbackInfo& info);
-
-	/*
-		Copies the database environment to a file.
-		(Wrapper for `mdb_env_copy2`)
-
-		Parameters:
-
-		* path - Path to the target file
-		* compact (optional) - Copy using compact setting
-		* callback - Callback when finished (this is performed asynchronously)
-	*/
-	Napi::Value copy(const CallbackInfo& info);	
-
-	/*
-		Closes the database environment.
-		(Wrapper for `mdb_env_close`)
-	*/
 	Napi::Value close(const CallbackInfo& info);
-
-	/*
-		Starts a new transaction in the environment.
-		(Wrapper for `mdb_txn_begin`)
-
-		Parameters:
-
-		* Options object that contains possible configuration options.
-
-		Possible options are:
-
-		* readOnly: if true, the transaction is read-only
-	*/
-	Napi::Value beginTxn(const CallbackInfo& info);
-	Napi::Value commitTxn(const CallbackInfo& info);
-	Napi::Value abortTxn(const CallbackInfo& info);
-
-	/*
-		Flushes all data to the disk asynchronously.
-		(Asynchronous wrapper for `mdb_env_sync`)
-
-		Parameters:
-
-		* Callback to be executed after the sync is complete.
-	*/
-	Napi::Value sync(const CallbackInfo& info);
 
 	/*
 		Performs a set of operations asynchronously, automatically wrapping it in its own transaction
@@ -415,7 +342,7 @@ public:
 	static napi_value write(napi_env env, napi_callback_info info);
 	static napi_value onExit(napi_env env, napi_callback_info info);
 	Napi::Value resetCurrentReadTxn(const CallbackInfo& info);
-	static int32_t toSharedBuffer(MDB_env* env, uint32_t* keyBuffer, slice data);
+	static int32_t toSharedBuffer(splinterdb* env, uint32_t* keyBuffer, slice data);
 };
 
 const int TXN_ABORTABLE = 1;
@@ -425,13 +352,13 @@ const int TXN_FROM_WORKER = 4;
 /*
 	`Txn`
 	Represents a transaction running on a database environment.
-	(Wrapper for `MDB_txn`)
+	(Wrapper for `txn_t`)
 */
 class TxnWrap : public ObjectWrap<TxnWrap> {
 private:
 
-	// Reference to the MDB_env of the wrapped MDB_txn
-	MDB_env *env;
+	// Reference to the splinterdb of the wrapped txn_t
+	splinterdb *env;
 
 	// Environment wrapper of the current transaction
 	EnvWrap *ew;
@@ -442,7 +369,6 @@ private:
 	unsigned int flags;
 
 	friend class CursorWrap;
-	friend class DbiWrap;
 	friend class EnvWrap;
 
 public:
@@ -450,7 +376,7 @@ public:
 	~TxnWrap();
 
 	// The wrapped object
-	MDB_txn *txn;
+	txn_t *txn;
 
 	// Remove the current TxnWrap from its EnvWrap
 	void removeFromEnvWrap();
@@ -482,65 +408,6 @@ public:
 };
 
 const int HAS_VERSIONS = 0x100;
-/*
-	`Dbi`
-	Represents a database instance in an environment.
-	(Wrapper for `MDB_dbi`)
-*/
-class DbiWrap : public ObjectWrap<DbiWrap> {
-public:
-	// Tells how keys should be treated
-	LmdbKeyType keyType;
-	// Stores flags set when opened
-	int flags;
-	// The wrapped object
-	MDB_dbi dbi;
-	// Reference to the MDB_env of the wrapped MDB_dbi
-	MDB_env *env;
-	// The EnvWrap object of the current Dbi
-	EnvWrap *ew;
-	// Whether the Dbi was opened successfully
-	bool isOpen;
-	// compression settings and space
-	Compression* compression;
-	// versions stored in data
-	bool hasVersions;
-	// current unsafe buffer for this db
-	bool getFast;
-
-	friend class TxnWrap;
-	friend class CursorWrap;
-	friend class EnvWrap;
-
-	DbiWrap(const CallbackInfo& info);
-	~DbiWrap();
-
-	/*
-		Closes the database instance.
-		Wrapper for `mdb_dbi_close`)
-	*/
-	Napi::Value close(const CallbackInfo& info);
-
-	/*
-		Drops the database instance, either deleting it completely (default) or just freeing its pages.
-
-		Parameters:
-
-		* Options object that contains possible configuration options.
-
-		Possible options are:
-
-		* justFreePages - indicates that the database pages need to be freed but the database shouldn't be deleted
-
-	*/
-	Napi::Value drop(const CallbackInfo& info);
-
-	Napi::Value stat(const CallbackInfo& info);
-	int prefetch(uint32_t* keys);
-	int open(int flags, char* name, bool hasVersions, LmdbKeyType keyType, Compression* compression);
-	int32_t doGetByBinary(uint32_t keySize, uint32_t ifNotTxnId, int64_t txnAddress);
-	static void setupExports(Napi::Env env, Object exports);
-};
 
 class Compression : public ObjectWrap<Compression> {
 public:
@@ -560,7 +427,6 @@ public:
 	Napi::Value setBuffer(const CallbackInfo& info);
 	Compression(const CallbackInfo& info);
 	friend class EnvWrap;
-	friend class DbiWrap;
 	//NAN_METHOD(Compression::startCompressing);
 	static void setupExports(Napi::Env env, Object exports);
 };
@@ -568,7 +434,7 @@ public:
 /*
 	`Cursor`
 	Represents a cursor instance that is assigned to a transaction and a database instance
-	(Wrapper for `MDB_cursor`)
+	(Wrapper for `splinterdb_iterator`)
 */
 class CursorWrap : public ObjectWrap<CursorWrap> {
 
@@ -580,16 +446,15 @@ private:
 	argtokey_callback_t freeKey;
 
 public:
-	MDB_cursor_op iteratingOp;	
-	MDB_cursor *cursor;
+	int iteratingOp;
+	splinterdb_iterator *cursor;
 	// Stores how key is represented
 	LmdbKeyType keyType;
 	int flags;
-	DbiWrap *dw;
-	MDB_txn *txn;
+	txn_t *txn;
 
 	// The wrapped object
-	CursorWrap(MDB_cursor* cursor);
+	CursorWrap(splinterdb_iterator* cursor);
 	CursorWrap(const CallbackInfo& info);
 	~CursorWrap();
 

@@ -1,4 +1,4 @@
-#include "lmdb-js.h"
+#include "splinterdb-js.h"
 
 using namespace Napi;
 
@@ -11,7 +11,7 @@ int Logging::initLogging() {
 int Logging::debugLogging = Logging::initLogging();
 
 Object InitAll(Napi::Env env, Object exports) {
-	if (Logging::debugLogging)
+	//if (Logging::debugLogging)
 		fprintf(stderr, "Start initialization\n");
 	// Initializes the module
 	// Export Env as constructor for EnvWrap
@@ -37,7 +37,7 @@ NAPI_MODULE_INIT() {
 
 #ifndef _WIN32
 extern "C" void node_module_register(void* m) {
-	//fprintf(stderr, "This is just a dummy function to be called if node isn't there so deno can load this module\n");
+	fprintf(stderr, "This is just a dummy function to be called if node isn't there so deno can load this module\n");
 }
 #endif
 

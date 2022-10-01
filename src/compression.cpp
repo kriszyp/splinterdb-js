@@ -1,5 +1,5 @@
 #include "lz4.h"
-#include "lmdb-js.h"
+#include "splinterdb-js.h"
 #include <atomic>
 
 using namespace Napi;

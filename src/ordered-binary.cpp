@@ -1,4 +1,4 @@
-#include "lmdb-js.h"
+#include "splinterdb-js.h"
 
 #ifdef _WIN32
 #define ntohl _byteswap_ulong

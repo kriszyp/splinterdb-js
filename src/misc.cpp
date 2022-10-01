@@ -1,4 +1,4 @@
-#include "lmdb-js.h"
+#include "splinterdb-js.h"
 #include <string.h>
 #include <stdio.h>
 #include <node_version.h>
