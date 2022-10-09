@@ -1,4 +1,7 @@
-#include "splinterdb/default_data_config.h"
+extern "C" {
+	#include "splinterdb/default_data_config.h"
+	#include "splinterdb/transaction.h"
+}
 #include "splinterdb-js.h"
 #include <atomic>
 #ifndef _WIN32
@@ -10,30 +13,30 @@ using namespace Napi;
 
 #define IGNORE_NOTFOUND	(1)
 
-env_tracking_t* EnvWrap::envTracking = EnvWrap::initTracking();
-thread_local std::vector<EnvWrap*>* EnvWrap::openEnvWraps = nullptr;
-thread_local std::unordered_map<void*, buffer_info_t>* EnvWrap::sharedBuffers = nullptr;
+env_tracking_t* DbWrap::envTracking = DbWrap::initTracking();
+thread_local std::vector<DbWrap*>* DbWrap::openDbWraps = nullptr;
+thread_local std::unordered_map<void*, buffer_info_t>* DbWrap::sharedBuffers = nullptr;
 void* getSharedBuffers() {
-	return (void*) EnvWrap::sharedBuffers;
+	return (void*) DbWrap::sharedBuffers;
 }
 
-env_tracking_t* EnvWrap::initTracking() {
+env_tracking_t* DbWrap::initTracking() {
 	env_tracking_t* tracking = new env_tracking_t;
-	tracking->envsLock = new pthread_mutex_t;
-	pthread_mutex_init(tracking->envsLock, nullptr);
+	tracking->dbsLock = new pthread_mutex_t;
+	pthread_mutex_init(tracking->dbsLock, nullptr);
 	tracking->getSharedBuffers = getSharedBuffers;
 	return tracking;
 }
 static napi_ref testRef;
 static napi_env testRefEnv;
-void EnvWrap::cleanupEnvWraps(void* data) {
-	if (openEnvWraps)
-		free(openEnvWraps);
+void DbWrap::cleanupDbWraps(void* data) {
+	if (openDbWraps)
+		free(openDbWraps);
 	else
 		fprintf(stderr, "How do we end up cleanup env wraps that don't exist?\n");
-	openEnvWraps = nullptr;
+	openDbWraps = nullptr;
 }
-EnvWrap::EnvWrap(const CallbackInfo& info) : ObjectWrap<EnvWrap>(info) {
+DbWrap::DbWrap(const CallbackInfo& info) : ObjectWrap<DbWrap>(info) {
 
 	this->currentWriteTxn = nullptr;
 	this->currentReadTxn = nullptr;
@@ -48,7 +51,7 @@ EnvWrap::EnvWrap(const CallbackInfo& info) : ObjectWrap<EnvWrap>(info) {
 }
 splinterdb* foundEnv;
 
-EnvWrap::~EnvWrap() {
+DbWrap::~DbWrap() {
 	// Close if not closed already
 	closeEnv();
 	pthread_mutex_destroy(this->writingLock);
@@ -56,21 +59,21 @@ EnvWrap::~EnvWrap() {
 	
 }
 
-void EnvWrap::cleanupStrayTxns() {
+void DbWrap::cleanupStrayTxns() {
 }
-void EnvWrap::consolidateTxns() {
+void DbWrap::consolidateTxns() {
 	// sort read txns by txn id, and then abort newer ones that we can just reference older ones with.
 
 }
 
 void cleanup(void* data) {
-	((EnvWrap*) data)->closeEnv();
+	((DbWrap*) data)->closeEnv();
 }
 
-Napi::Value EnvWrap::open(const CallbackInfo& info) {
+Napi::Value DbWrap::open(const CallbackInfo& info) {
 	int rc;
 	// Get the wrapper
-	if (!this->env) {
+	if (!this->db) {
 		return throwError(info.Env(), "The environment is already closed.");
 	}
 	Object options = info[0].As<Object>();
@@ -127,19 +130,18 @@ Napi::Value EnvWrap::open(const CallbackInfo& info) {
 	}
 
 	napiEnv = info.Env();
-	rc = openEnv(flags, jsFlags, (const char*)pathString.c_str(), (char*) keyBuffer, compression, maxDbs, maxReaders, mapSize, pageSize, encryptKey.empty() ? nullptr : (char*)encryptKey.c_str());
+	rc = openDB(flags, jsFlags, (const char*)pathString.c_str(), (char*) keyBuffer, compression, maxDbs, maxReaders, mapSize, pageSize, encryptKey.empty() ? nullptr : (char*)encryptKey.c_str());
 	//delete[] pathBytes;
 	//if (rc < 0)
 	//	return throwLmdbError(info.Env(), rc);
 	napi_add_env_cleanup_hook(napiEnv, cleanup, this);
 	return info.Env().Undefined();
 }
-int EnvWrap::openEnv(int flags, int jsFlags, const char* path, char* keyBuffer, Compression* compression, int maxDbs,
+int DbWrap::openDB(int flags, int jsFlags, const char* path, char* keyBuffer, Compression* compression, int maxDbs,
 		int maxReaders, size_t mapSize, int pageSize, char* encryptionKey) {
 	this->keyBuffer = keyBuffer;
 	this->compression = compression;
 	this->jsFlags = jsFlags;
-
 
 // Initialize data configuration, using default key-comparison handling.
 	data_config splinter_data_cfg;
@@ -149,13 +151,13 @@ int EnvWrap::openEnv(int flags, int jsFlags, const char* path, char* keyBuffer, 
 	splinterdb_config splinterdb_cfg;
 	memset(&splinterdb_cfg, 0, sizeof(splinterdb_cfg));
 	splinterdb_cfg.filename	= path;
-	splinterdb_cfg.disk_size  = mapSize;
-	splinterdb_cfg.cache_size = (10 * 1024 * 1024);
+	splinterdb_cfg.disk_size  = 1024*1024*1024;
+	splinterdb_cfg.cache_size = (64 * 1024 * 1024);
 	splinterdb_cfg.data_cfg	= &splinter_data_cfg;
 
-	transactional_splinterdb *spl_handle = NULL; // To a running SplinterDB instance
+	this->db = NULL; // To a running SplinterDB instance
 
-	int rc = transactional_splinterdb_create(&splinterdb_cfg, &spl_handle);
+	int rc = transactional_splinterdb_create(&splinterdb_cfg, &db);
 	return rc;
 }
 #ifdef _WIN32
@@ -166,15 +168,15 @@ int EnvWrap::openEnv(int flags, int jsFlags, const char* path, char* keyBuffer, 
 #endif
 
 
-NAPI_FUNCTION(EnvWrap::onExit) {
+NAPI_FUNCTION(DbWrap::onExit) {
 	napi_value returnValue;
 	RETURN_UNDEFINED;
 }
 NAPI_FUNCTION(getEnvsPointer) {
 	napi_value returnValue;
-	napi_create_double(env, (double) (size_t) EnvWrap::envTracking, &returnValue);
-	if (!EnvWrap::sharedBuffers)
-		EnvWrap::sharedBuffers = new std::unordered_map<void*, buffer_info_t>;
+	napi_create_double(env, (double) (size_t) DbWrap::envTracking, &returnValue);
+	if (!DbWrap::sharedBuffers)
+		DbWrap::sharedBuffers = new std::unordered_map<void*, buffer_info_t>;
 	return returnValue;
 }
 
@@ -184,13 +186,13 @@ NAPI_FUNCTION(setEnvsPointer) {
 	GET_INT64_ARG(0);
 	env_tracking_t* adoptedTracking = (env_tracking_t*) i64;
 	// copy any existing ones over to the central one
-	adoptedTracking->envs.assign(EnvWrap::envTracking->envs.begin(), EnvWrap::envTracking->envs.end());
-	EnvWrap::envTracking = adoptedTracking;
+	adoptedTracking->dbs.assign(DbWrap::envTracking->dbs.begin(), DbWrap::envTracking->dbs.end());
+	DbWrap::envTracking = adoptedTracking;
 	std::unordered_map<void*, buffer_info_t>* adoptedBuffers = (std::unordered_map<void*, buffer_info_t>*) adoptedTracking->getSharedBuffers();
-	if (EnvWrap::sharedBuffers && adoptedBuffers != EnvWrap::sharedBuffers) {
-		free(EnvWrap::sharedBuffers);
+	if (DbWrap::sharedBuffers && adoptedBuffers != DbWrap::sharedBuffers) {
+		free(DbWrap::sharedBuffers);
 	}
-	EnvWrap::sharedBuffers = adoptedBuffers;
+	DbWrap::sharedBuffers = adoptedBuffers;
 	RETURN_UNDEFINED;
 }
 
@@ -206,17 +208,17 @@ NAPI_FUNCTION(getSharedBuffer) {
 	uint32_t bufferId;
 	GET_UINT32_ARG(bufferId, 0);
 	GET_INT64_ARG(1);
-	EnvWrap* ew = (EnvWrap*) i64;
-	for (auto bufferRef = EnvWrap::sharedBuffers->begin(); bufferRef != EnvWrap::sharedBuffers->end(); bufferRef++) {
+	DbWrap* ew = (DbWrap*) i64;
+	for (auto bufferRef = DbWrap::sharedBuffers->begin(); bufferRef != DbWrap::sharedBuffers->end(); bufferRef++) {
 		if (bufferRef->second.id == bufferId) {
 			void* start = bufferRef->first;
 			buffer_info_t* buffer = &bufferRef->second;
-			if (buffer->env == ew->env) {
+			if (buffer->db == ew->db) {
 				//fprintf(stderr, "found exiting buffer for %u\n", bufferId);
 				napi_get_reference_value(env, buffer->ref, &returnValue);
 				return returnValue;
 			}
-			if (buffer->env) {
+			if (buffer->db) {
 				fprintf(stderr, "env changed");
 				// if for some reason it is different env that didn't get cleaned up
 				napi_value arrayBuffer;
@@ -225,7 +227,7 @@ NAPI_FUNCTION(getSharedBuffer) {
 				napi_delete_reference(env, buffer->ref);
 			}
 			size_t end = buffer->end;
-			buffer->env = ew->env;
+			buffer->db = ew->db;
 			size_t size = end - (size_t) start;
 			napi_create_external_arraybuffer(env, start, size, cleanupExternal, (void*) size, &returnValue);
 			int64_t result;
@@ -251,27 +253,36 @@ NAPI_FUNCTION(getTestRef) {
 	return returnValue;
 }
 
-thread_local int nextSharedId = 1;
-
-void EnvWrap::closeEnv(bool hasLock) {
-	if (!env)
-		return;
-	env = nullptr;
+Napi::Value DbWrap::beginTxn(const CallbackInfo& info) {
+	int flags = info[0].As<Number>();
+	transactional_splinterdb_begin(db, &txn);
+}
+Napi::Value DbWrap::commitTxn(const CallbackInfo& info) {
+//	TxnTracked *currentTxn = this->writeTxn;
+	transactional_splinterdb_commit(db, &txn);
 }
 
-Napi::Value EnvWrap::close(const CallbackInfo& info) {
-	if (!this->env) {
+thread_local int nextSharedId = 1;
+
+void DbWrap::closeEnv(bool hasLock) {
+	if (!db)
+		return;
+	db = nullptr;
+}
+
+Napi::Value DbWrap::close(const CallbackInfo& info) {
+	if (!this->db) {
 		return throwError(info.Env(), "The environment is already closed.");
 	}
 	this->closeEnv();
 	return info.Env().Undefined();
 }
 
-void EnvWrap::setupExports(Napi::Env env, Object exports) {
-	// EnvWrap: Prepare constructor template
-	Function EnvClass = ObjectWrap<EnvWrap>::DefineClass(env, "Env", {
-		EnvWrap::InstanceMethod("open", &EnvWrap::open),
-		EnvWrap::InstanceMethod("close", &EnvWrap::close),
+void DbWrap::setupExports(Napi::Env env, Object exports) {
+	// DbWrap: Prepare constructor template
+	Function EnvClass = ObjectWrap<DbWrap>::DefineClass(env, "Env", {
+		DbWrap::InstanceMethod("open", &DbWrap::open),
+		DbWrap::InstanceMethod("close", &DbWrap::close),
 	});
 	//envTpl->InstanceTemplate()->SetInternalFieldCount(1);
 	exports.Set("Env", EnvClass);

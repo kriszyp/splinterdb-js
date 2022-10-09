@@ -12,8 +12,6 @@ void setupExportMisc(Napi::Env env, Object exports) {
 	Object versionObj = Object::New(env);
 
 	int major, minor, patch;
-	char *str = mdb_version(&major, &minor, &patch);
-	versionObj.Set("versionString", String::New(env, str));
 	versionObj.Set("major", Number::New(env, major));
 	versionObj.Set("minor", Number::New(env, minor));
 	versionObj.Set("patch", Number::New(env, patch));
@@ -24,7 +22,7 @@ void setupExportMisc(Napi::Env env, Object exports) {
 	exports.Set("version", versionObj);
 	exports.Set("setGlobalBuffer", Function::New(env, setGlobalBuffer));
 	exports.Set("lmdbError", Function::New(env, lmdbError));
-	exports.Set("enableDirectV8", Function::New(env, enableDirectV8));
+	//exports.Set("enableDirectV8", Function::New(env, enableDirectV8));
 	EXPORT_NAPI_FUNCTION("createBufferForAddress", createBufferForAddress);
 	EXPORT_NAPI_FUNCTION("getAddress", getViewAddress);
 	EXPORT_NAPI_FUNCTION("detachBuffer", detachBuffer);
@@ -48,14 +46,14 @@ Value valToStringUnsafe(slice &data) {
 }*/
 
 Value valToUtf8(Env env, slice &data) {
-	return String::New(env, (const char*) data.mv_data, data.mv_size);
+	return String::New(env, (const char*) data.data, data.length);
 }
 
 Value valToString(Env env, slice &data) {
 	// UTF-16 buffer
-	const uint16_t *buffer = reinterpret_cast<const uint16_t*>(data.mv_data);
+	const uint16_t *buffer = reinterpret_cast<const uint16_t*>(data.data);
 	// Number of UTF-16 code points
-	size_t n = data.mv_size / sizeof(uint16_t);
+	size_t n = data.length / sizeof(uint16_t);
 	
 	// Check zero termination
 	if (n < 1 || buffer[n - 1] != 0) {
@@ -63,55 +61,55 @@ Value valToString(Env env, slice &data) {
 	}
 	
 	size_t length = n - 1;
-	return String::New(env, (const char16_t*)data.mv_data, length);
+	return String::New(env, (const char16_t*)data.data, length);
 }
 
-bool valToBinaryFast(slice &data, DbiWrap* dw) {
+bool valToBinaryFast(slice &data, DbWrap* dw) {
 	Compression* compression = dw->compression;
 	if (compression) {
-		if (data.mv_data == compression->decompressTarget) {
+		if (data.data == compression->decompressTarget) {
 			// already decompressed to the target, nothing more to do
 		} else {
-			if (data.mv_size > compression->decompressSize) {
+			if (data.length > compression->decompressSize) {
 				// indicates we could not copy, won't fit
 				return false;
 			}
 			// copy into the buffer target
-			memcpy(compression->decompressTarget, data.mv_data, data.mv_size);
+			memcpy(compression->decompressTarget, data.data, data.length);
 		}
 	} else {
-		if (data.mv_size > globalUnsafeSize) {
+		if (data.length > globalUnsafeSize) {
 			// indicates we could not copy, won't fit
 			return false;
 		}
-		memcpy(globalUnsafePtr, data.mv_data, data.mv_size);
+		memcpy(globalUnsafePtr, data.data, data.length);
 	}
 	return true;
 }
-Value valToBinaryUnsafe(slice &data, DbiWrap* dw, Env env) {
+Value valToBinaryUnsafe(slice &data, DbWrap* dw, Env env) {
 	valToBinaryFast(data, dw);
-	return Number::New(env, data.mv_size);
+	return Number::New(env, data.length);
 }
 
 
-int getVersionAndUncompress(slice &data, DbiWrap* dw) {
+int getVersionAndUncompress(slice &data, DbWrap* dw) {
 	//fprintf(stdout, "uncompressing %u\n", compressionThreshold);
-	unsigned char* charData = (unsigned char*) data.mv_data;
+	unsigned char* charData = (unsigned char*) data.data;
 	if (dw->hasVersions) {
-		memcpy((dw->ew->keyBuffer + 16), charData, 8);
+		memcpy((dw->keyBuffer + 16), charData, 8);
 //		fprintf(stderr, "getVersion %u\n", lastVersion);
 		charData = charData + 8;
-		data.mv_data = charData;
-		data.mv_size -= 8;
+		data.data = charData;
+		data.length -= 8;
 	}
-	if (data.mv_size == 0) {
+	if (data.length == 0) {
 		return 1;// successFunc(data);
 	}
 	unsigned char statusByte = dw->compression ? charData[0] : 0;
 		//fprintf(stdout, "uncompressing status %X\n", statusByte);
 	if (statusByte >= 250) {
 		bool isValid;
-		dw->compression->decompress(data, isValid, !dw->getFast);
+		dw->compression->decompress(data, isValid, true/*!dw->getFast*/);
 		return isValid ? 2 : 0;
 	}
 	return 1;
@@ -167,7 +165,7 @@ Value lmdbNativeFunctions(const CallbackInfo& info) {
 Napi::Value throwLmdbError(Napi::Env env, int rc) {
 	if (rc < 0 && !(rc < -30700 && rc > -30800))
 		rc = -rc;
-	Error error = Error::New(env, mdb_strerror(rc));
+	Error error = Error::New(env, "error in splinterdb");
 	error.Set("code", Number::New(env, rc));
 	error.ThrowAsJavaScriptException();
 	return env.Undefined();
@@ -178,22 +176,21 @@ Napi::Value throwError(Napi::Env env, const char* message) {
 	return env.Undefined();
 }
 
-int putWithVersion(MDB_txn *   txn,
-		MDB_dbi	 dbi,
-		slice *   key,
-		slice *   data,
+int putWithVersion(transactional_splinterdb* db, transaction *   txn,
+		slice   key,
+		slice   data,
 		unsigned int	flags, double version) {
 	// leave 8 header bytes available for version and copy in with reserved memory
-	char* sourceData = (char*) data->mv_data;
-	int size = data->mv_size;
-	data->mv_size = size + 8;
-	int rc = mdb_put(txn, dbi, key, data, flags | MDB_RESERVE);
+	char* sourceData = (char*) data.data;
+	int size = data.length;
+	data.length = size + 8;
+	int rc = transactional_splinterdb_insert(db, txn, key, data);
 	if (rc == 0) {
-		// if put is successful, data->mv_data will point into the database where we copy the data to
-		memcpy((char*) data->mv_data + 8, sourceData, size);
-		*((double*) data->mv_data) = version;
+		// if put is successful, data.data will point into the database where we copy the data to
+		memcpy((char*) data.data + 8, sourceData, size);
+		*((double*) data.data) = version;
 	}
-	data->mv_data = sourceData; // restore this so that if it points to data that needs to be freed, it points to the right place
+	data.data = sourceData; // restore this so that if it points to data that needs to be freed, it points to the right place
 	return rc;
 }
 

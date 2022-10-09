@@ -21,8 +21,8 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-#ifndef NODE_LMDB_H
-#define NODE_LMDB_H
+#ifndef SPLINTERDB_JS_H
+#define SPLINTERDB_JS_H
 
 #include <vector>
 #include <unordered_map>
@@ -31,15 +31,16 @@
 #include <napi.h>
 #include <node_api.h>
 
+extern "C" {
 #include "splinterdb/transaction.h"
 #include "splinterdb/public_util.h"
+}
 #include "lz4.h"
 
 using namespace Napi;
 
 // set the threshold of when to use shared buffers (for uncompressed entries larger than this value)
 const size_t SHARED_BUFFER_THRESHOLD = 0x4000;
-typedef int txn_t;
 typedef int dbi_t;
 
 #ifndef __CPTHREAD_H__
@@ -97,6 +98,7 @@ int pthread_cond_broadcast(pthread_cond_t *cond);
 
 #endif
 
+extern "C" void openSDB();
 int cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex, uint64_t ns);
 
 #endif /* __CPTHREAD_H__ */
@@ -131,10 +133,10 @@ enum class KeyCreation {
 	InArray = 2,
 };
 const int THEAD_MEMORY_THRESHOLD = 4000;
-#define USER_MAX_KEY_SIZE ((int)100)
+#define USER_MAX_KEY_SIZE ((size_t)100)
 
 class TxnWrap;
-class EnvWrap;
+class DbWrap;
 class CursorWrap;
 class Compression;
 
@@ -150,7 +152,7 @@ void consoleLogN(int n);
 void setFlagFromValue(int *flags, int flag, const char *name, bool defaultValue, Object options);
 void writeValueToEntry(const Value &str, slice *val);
 LmdbKeyType keyTypeFromOptions(const Value &val, LmdbKeyType defaultKeyType = LmdbKeyType::DefaultKey);
-int getVersionAndUncompress(slice &data, EnvWrap* ew);
+int getVersionAndUncompress(slice &data, DbWrap* ew);
 int compareFast(const slice *a, const slice *b);
 Value setGlobalBuffer(const CallbackInfo& info);
 Value lmdbError(const CallbackInfo& info);
@@ -173,14 +175,14 @@ Value enableDirectV8(const CallbackInfo& info);
 #endif
 #endif
 
-bool valToBinaryFast(slice &data, EnvWrap* ew);
+bool valToBinaryFast(slice &data, DbWrap* ew);
 Value valToUtf8(Env env, slice &data);
 Value valToString(slice &data);
 Value valToStringUnsafe(slice &data);
 Value valToBinary(slice &data);
-Value valToBinaryUnsafe(slice &data, EnvWrap* ew, Env env);
+Value valToBinaryUnsafe(slice &data, DbWrap* ew, Env env);
 
-int putWithVersion(txn_t* txn,
+int putWithVersion(transactional_splinterdb* db, transaction *   txn,
 		slice *   key,
 		slice *   data,
 		unsigned int	flags, double version);
@@ -189,11 +191,11 @@ Napi::Value throwLmdbError(Napi::Env env, int rc);
 Napi::Value throwError(Napi::Env env, const char* message);
 
 class TxnWrap;
-class EnvWrap;
+class DbWrap;
 class CursorWrap;
 class SharedEnv {
   public:
-	splinterdb* env;
+	transactional_splinterdb* env;
 	uint64_t dev;
 	uint64_t inode;
 	int count;
@@ -209,27 +211,27 @@ const int DELETE_ON_CLOSE = 2;
 
 class WriteWorker {
   public:
-	WriteWorker(splinterdb* env, EnvWrap* envForTxn, uint32_t* instructions);
+	WriteWorker(transactional_splinterdb* env, DbWrap* envForTxn, uint32_t* instructions);
 	void Write();
-	txn_t* txn;
-	txn_t* AcquireTxn(int* flags);
+	transaction* txn;
+	transaction* AcquireTxn(int* flags);
 	void UnlockTxn();
-	int WaitForCallbacks(txn_t** txn, bool allowCommit, uint32_t* target);
+	int WaitForCallbacks(transaction* txn, bool allowCommit, uint32_t* target);
 	virtual void ReportError(const char* error);
 	virtual void SendUpdate();
 	int interruptionStatus;
 	bool finishedProgress;
 	bool hasError;
-	EnvWrap* envForTxn;
+	DbWrap* envForTxn;
 	virtual ~WriteWorker();
 	uint32_t* instructions;
 	int progressStatus;
-	splinterdb* env;
-	static int DoWrites(txn_t* txn, EnvWrap* envForTxn, uint32_t* instruction, WriteWorker* worker);
+	transactional_splinterdb* db;
+	static int DoWrites(transaction* txn, DbWrap* envForTxn, uint32_t* instruction, WriteWorker* worker);
 };
 class AsyncWriteWorker : public WriteWorker, public AsyncProgressWorker<char> {
   public:
-	AsyncWriteWorker(splinterdb* env, EnvWrap* envForTxn, uint32_t* instructions, const Function& callback);
+	AsyncWriteWorker(transactional_splinterdb* env, DbWrap* envForTxn, uint32_t* instructions, const Function& callback);
 	void Execute(const AsyncProgressWorker::ExecutionProgress& execution);
 	void OnProgress(const char* data, size_t count);
 	void OnOK();
@@ -240,10 +242,10 @@ class AsyncWriteWorker : public WriteWorker, public AsyncProgressWorker<char> {
 };
 class TxnTracked {
   public:
-	TxnTracked(txn_t *txn, unsigned int flags);
+	TxnTracked(transaction *txn, unsigned int flags);
 	~TxnTracked();
 	unsigned int flags;
-	txn_t *txn;
+	transaction *txn;
 	TxnTracked *parent;
 };
 
@@ -255,61 +257,63 @@ typedef void* (get_shared_buffers_t)();
 	(Wrapper for `splinterdb`)
 */
 typedef struct env_tracking_t {
-	pthread_mutex_t* envsLock;
-	std::vector<SharedEnv> envs;
+	pthread_mutex_t* dbsLock;
+	std::vector<SharedEnv> dbs;
 	get_shared_buffers_t* getSharedBuffers;
 } env_tracking_t;
 
 typedef struct buffer_info_t {
 	uint32_t id;
 	size_t end;
-	splinterdb* env;
+	transactional_splinterdb* db;
 	napi_ref ref;
 } buffer_info_t;
-class EnvWrap : public ObjectWrap<EnvWrap> {
+class DbWrap : public ObjectWrap<DbWrap> {
 private:
 	// List of open read transactions
 	std::vector<TxnWrap*> readTxns;
 	static env_tracking_t* initTracking();
 	napi_env napiEnv;
-	// compression settings and space
-	Compression *compression;
-	static thread_local std::vector<EnvWrap*>* openEnvWraps;
+	static thread_local std::vector<DbWrap*>* openDbWraps;
 
 	// Cleans up stray transactions
 	void cleanupStrayTxns();
 	void consolidateTxns();
-   static void cleanupEnvWraps(void* data);
+   static void cleanupDbWraps(void* data);
 
 	friend class TxnWrap;
 
 public:
-	EnvWrap(const CallbackInfo&);
-	~EnvWrap();
+	DbWrap(const CallbackInfo&);
+	~DbWrap();
 	// The wrapped object
-	splinterdb *env;
+	transactional_splinterdb* db;
 	// Current write transaction
 	static thread_local std::unordered_map<void*, buffer_info_t>* sharedBuffers;
 	static env_tracking_t* envTracking;
 	TxnWrap *currentWriteTxn;
 	TxnTracked *writeTxn;
+	transaction txn;
 	pthread_mutex_t* writingLock;
 	pthread_cond_t* writingCond;
 	std::vector<AsyncWorker*> workers;
 
-	txn_t* currentReadTxn;
+	transaction* currentReadTxn;
 	WriteWorker* writeWorker;
 	bool readTxnRenewed;
 	unsigned int jsFlags;
 	char* keyBuffer;
 	int pageSize;
 	time_t lastReaderCheck;
-	txn_t* getReadTxn();
+	transaction* getReadTxn();
+	bool hasVersions;
+	// compression settings and space
+	Compression *compression;
 
 	// Sets up exports for the Env constructor
 	static void setupExports(Napi::Env env, Object exports);
 	void closeEnv(bool hasLock = false);
-	int openEnv(int flags, int jsFlags, const char* path, char* keyBuffer, Compression* compression, int maxDbs,
+	int openDB(int flags, int jsFlags, const char* path, char* keyBuffer, Compression* compression, int maxDbs,
 		int maxReaders, size_t mapSize, int pageSize, char* encryptionKey);
 
 	/*
@@ -330,6 +334,9 @@ public:
 	Napi::Value open(const CallbackInfo& info);
 	Napi::Value close(const CallbackInfo& info);
 
+	Napi::Value beginTxn(const CallbackInfo& info);
+	Napi::Value commitTxn(const CallbackInfo& info);
+
 	/*
 		Performs a set of operations asynchronously, automatically wrapping it in its own transaction
 
@@ -342,7 +349,7 @@ public:
 	static napi_value write(napi_env env, napi_callback_info info);
 	static napi_value onExit(napi_env env, napi_callback_info info);
 	Napi::Value resetCurrentReadTxn(const CallbackInfo& info);
-	static int32_t toSharedBuffer(splinterdb* env, uint32_t* keyBuffer, slice data);
+	static int32_t toSharedBuffer(transactional_splinterdb* env, uint32_t* keyBuffer, slice data);
 };
 
 const int TXN_ABORTABLE = 1;
@@ -352,56 +359,56 @@ const int TXN_FROM_WORKER = 4;
 /*
 	`Txn`
 	Represents a transaction running on a database environment.
-	(Wrapper for `txn_t`)
+	(Wrapper for `transaction`)
 */
 class TxnWrap : public ObjectWrap<TxnWrap> {
 private:
 
-	// Reference to the splinterdb of the wrapped txn_t
-	splinterdb *env;
+	// Reference to the splinterdb of the wrapped transaction
+	transactional_splinterdb *db;
 
 	// Environment wrapper of the current transaction
-	EnvWrap *ew;
+	DbWrap *ew;
 	// parent TW, if it is exists
 	TxnWrap *parentTw;
 	
-	// Flags used with mdb_txn_begin
+	// Flags used with transaction_begin
 	unsigned int flags;
 
 	friend class CursorWrap;
-	friend class EnvWrap;
+	friend class DbWrap;
 
 public:
 	TxnWrap(const CallbackInfo& info);
 	~TxnWrap();
 
 	// The wrapped object
-	txn_t *txn;
+	transaction *txn;
 
-	// Remove the current TxnWrap from its EnvWrap
-	void removeFromEnvWrap();
-	int begin(EnvWrap *ew, unsigned int flags);
+	// Remove the current TxnWrap from its DbWrap
+	void removeFromDbWrap();
+	int begin(DbWrap *ew, unsigned int flags);
 
 	/*
 		Commits the transaction.
-		(Wrapper for `mdb_txn_commit`)
+		(Wrapper for `transaction_commit`)
 	*/
 	Napi::Value commit(const CallbackInfo& info);
 
 	/*
 		Aborts the transaction.
-		(Wrapper for `mdb_txn_abort`)
+		(Wrapper for `transaction_abort`)
 	*/
 	Napi::Value abort(const CallbackInfo& info);
 
 	/*
 		Aborts a read-only transaction but makes it renewable with `renew`.
-		(Wrapper for `mdb_txn_reset`)
+		(Wrapper for `transaction_reset`)
 	*/
 	void reset();
 	/*
 		Renews a read-only transaction after it has been reset.
-		(Wrapper for `mdb_txn_renew`)
+		(Wrapper for `transaction_renew`)
 	*/
 	Napi::Value renew(const CallbackInfo& info);
 	static void setupExports(Napi::Env env, Object exports);
@@ -422,11 +429,11 @@ public:
 	static thread_local LZ4_stream_t* stream;
 	void decompress(slice& data, bool &isValid, bool canAllocate);
 	argtokey_callback_t compress(slice* value, argtokey_callback_t freeValue);
-	int compressInstruction(EnvWrap* env, double* compressionAddress);
+	int compressInstruction(DbWrap* env, double* compressionAddress);
 	Napi::Value ctor(const CallbackInfo& info);
 	Napi::Value setBuffer(const CallbackInfo& info);
 	Compression(const CallbackInfo& info);
-	friend class EnvWrap;
+	friend class DbWrap;
 	//NAN_METHOD(Compression::startCompressing);
 	static void setupExports(Napi::Env env, Object exports);
 };
@@ -451,7 +458,7 @@ public:
 	// Stores how key is represented
 	LmdbKeyType keyType;
 	int flags;
-	txn_t *txn;
+	transaction *txn;
 
 	// The wrapped object
 	CursorWrap(splinterdb_iterator* cursor);
@@ -482,4 +489,4 @@ public:
 	//Value getStringByBinary(const CallbackInfo& info);
 };
 
-#endif // NODE_LMDB_H
+#endif // SPLINTERDB_JS_H

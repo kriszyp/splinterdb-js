@@ -43,8 +43,8 @@ Napi::Value Compression::setBuffer(const CallbackInfo& info) {
 void Compression::decompress(slice& data, bool &isValid, bool canAllocate) {
 	uint32_t uncompressedLength;
 	int compressionHeaderSize;
-	uint32_t compressedLength = data.mv_size;
-	unsigned char* charData = (unsigned char*) data.mv_data;
+	uint32_t compressedLength = data.length;
+	unsigned char* charData = (unsigned char*) data.data;
 
 	if (charData[0] == 254) {
 		uncompressedLength = ((uint32_t)charData[1] << 16) | ((uint32_t)charData[2] << 8) | (uint32_t)charData[3];
@@ -61,10 +61,10 @@ void Compression::decompress(slice& data, bool &isValid, bool canAllocate) {
 		isValid = false;
 		return;
 	}
-	data.mv_data = decompressTarget;
-	data.mv_size = uncompressedLength;
+	data.data = decompressTarget;
+	data.length = uncompressedLength;
 	//TODO: For larger blocks with known encoding, it might make sense to allocate space for it and use an ExternalString
-	//fprintf(stdout, "compressed size %u uncompressedLength %u, first byte %u\n", data.mv_size, uncompressedLength, charData[compressionHeaderSize]);
+	//fprintf(stdout, "compressed size %u uncompressedLength %u, first byte %u\n", data.length, uncompressedLength, charData[compressionHeaderSize]);
 	if (uncompressedLength > decompressSize) {
 		isValid = false;
 		return;
@@ -87,14 +87,14 @@ void Compression::decompress(slice& data, bool &isValid, bool canAllocate) {
 	isValid = true;
 }
 
-int Compression::compressInstruction(EnvWrap* env, double* compressionAddress) {
+int Compression::compressInstruction(DbWrap* env, double* compressionAddress) {
 	slice value;
-	value.mv_data = (void*)((size_t) * (compressionAddress - 1));
-	value.mv_size = *(((uint32_t*)compressionAddress) - 3);
+	value.data = (void*)((size_t) * (compressionAddress - 1));
+	value.length = *(((uint32_t*)compressionAddress) - 3);
 	argtokey_callback_t compressedData = compress(&value, nullptr);
 	if (compressedData) {
-		*(((uint32_t*)compressionAddress) - 3) = value.mv_size;
-		*((size_t*)(compressionAddress - 1)) = (size_t)value.mv_data;
+		*(((uint32_t*)compressionAddress) - 3) = value.length;
+		*((size_t*)(compressionAddress - 1)) = (size_t)value.data;
 		int64_t status = std::atomic_exchange((std::atomic<int64_t>*) compressionAddress, (int64_t) 0);
 		if (status == 1 && env) {
 			pthread_mutex_lock(env->writingLock);
@@ -102,7 +102,7 @@ int Compression::compressInstruction(EnvWrap* env, double* compressionAddress) {
 			pthread_mutex_unlock(env->writingLock);
 			//fprintf(stderr, "sent compression completion signal\n");
 		}
-		//fprintf(stdout, "compressed to %p %u %u %p\n", value.mv_data, value.mv_size, status, env);
+		//fprintf(stdout, "compressed to %p %u %u %p\n", value.data, value.length, status, env);
 		return 0;
 	} else {
 		fprintf(stdout, "failed to compress\n");
@@ -111,9 +111,9 @@ int Compression::compressInstruction(EnvWrap* env, double* compressionAddress) {
 }
 
 argtokey_callback_t Compression::compress(slice* value, void (*freeValue)(slice&)) {
-	size_t dataLength = value->mv_size;
-	char* data = (char*)value->mv_data;
-	if (value->mv_size < compressionThreshold && !(value->mv_size > 0 && ((uint8_t*)data)[0] >= 250))
+	size_t dataLength = value->length;
+	char* data = (char*)value->data;
+	if (value->length < compressionThreshold && !(value->length > 0 && ((uint8_t*)data)[0] >= 250))
 		return freeValue; // don't compress if less than threshold (but we must compress if the first byte is the compression indicator)
 	bool longSize = dataLength >= 0x1000000;
 	int prefixSize = (longSize ? 8 : 4);
@@ -143,10 +143,10 @@ argtokey_callback_t Compression::compress(slice* value, void (*freeValue)(slice&
 			compressedData[2] = (uint8_t)(dataLength >> 8u);
 			compressedData[3] = (uint8_t)dataLength;
 		}
-		value->mv_size = compressedSize + prefixSize;
-		value->mv_data = compressed;
+		value->length = compressedSize + prefixSize;
+		value->data = compressed;
 		return ([](slice &value) -> void {
-			delete[] (char*)value.mv_data;
+			delete[] (char*)value.data;
 		});
 	}
 	else {
@@ -157,7 +157,7 @@ argtokey_callback_t Compression::compress(slice* value, void (*freeValue)(slice&
 
 class CompressionWorker : public AsyncWorker {
   public:
-	CompressionWorker(EnvWrap* env, double* compressionAddress, const Function& callback)
+	CompressionWorker(DbWrap* env, double* compressionAddress, const Function& callback)
 	  : AsyncWorker(callback), env(env), compressionAddress(compressionAddress) {}
 
 
@@ -174,14 +174,14 @@ class CompressionWorker : public AsyncWorker {
 	}
 
   private:
-	EnvWrap* env;
+	DbWrap* env;
 	double* compressionAddress;
 };
 
-NAPI_FUNCTION(EnvWrap::compress) {
+NAPI_FUNCTION(DbWrap::compress) {
 	ARGS(3)
    GET_INT64_ARG(0);
-   EnvWrap* ew = (EnvWrap*) i64;
+   DbWrap* ew = (DbWrap*) i64;
    napi_get_value_int64(env, args[1], &i64);
    double* compressionAddress = (double*) i64;
 	CompressionWorker* worker = new CompressionWorker(ew, (double*) compressionAddress, Function(env, args[2]));

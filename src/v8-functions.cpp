@@ -15,7 +15,7 @@
 
 using namespace v8;
 int32_t getByBinaryFast(Local<v8::Object> instance, double dwPointer, uint32_t keySize, uint32_t ifNotTxnId, int64_t txnAddress) {
-	DbiWrap* dw = (DbiWrap*) (size_t) dwPointer;
+	DbWrap* dw = (DbWrap*) (size_t) dwPointer;
 	return dw->doGetByBinary(keySize, ifNotTxnId, txnAddress);
 }
 
@@ -23,7 +23,7 @@ int32_t getByBinaryFast(Local<v8::Object> instance, double dwPointer, uint32_t k
 void getByBinaryV8(const FunctionCallbackInfo<v8::Value>& info) {
 	Isolate* isolate = Isolate::GetCurrent();
 	auto context = isolate->GetCurrentContext();
-	DbiWrap* dw = (DbiWrap*) (size_t) info[0]->NumberValue(context).FromJust();
+	DbWrap* dw = (DbWrap*) (size_t) info[0]->NumberValue(context).FromJust();
 	info.GetReturnValue().Set(v8::Number::New(isolate, dw->doGetByBinary(
 		info[1]->Uint32Value(context).FromJust(),
 		info[2]->Uint32Value(context).FromJust(),
@@ -31,7 +31,7 @@ void getByBinaryV8(const FunctionCallbackInfo<v8::Value>& info) {
 }
 int32_t positionFast(Local<v8::Object> instance, double cwPointer, uint32_t flags, uint32_t offset, uint32_t keySize, uint64_t endKeyAddress) {
 	CursorWrap* cw = (CursorWrap*) (size_t) cwPointer;
-	DbiWrap* dw = cw->dw;
+	DbWrap* dw = cw->dw;
 	dw->getFast = true;
 	cw->flags = flags;
 	return cw->doPosition(offset, keySize, endKeyAddress);
@@ -48,7 +48,7 @@ void positionV8(const FunctionCallbackInfo<v8::Value>& info) {
 
 int32_t iterateFast(Local<v8::Object> instance, double cwPointer) {
 	CursorWrap* cw = (CursorWrap*) (size_t) cwPointer;
-	DbiWrap* dw = cw->dw;
+	DbWrap* dw = cw->dw;
 	dw->getFast = true;
 	slice key, data;
 	int rc = mdb_cursor_get(cw->cursor, &key, &data, cw->iteratingOp);
@@ -57,7 +57,7 @@ int32_t iterateFast(Local<v8::Object> instance, double cwPointer) {
 void iterateV8(const FunctionCallbackInfo<v8::Value>& info) {
 	Isolate* isolate = Isolate::GetCurrent();
 	CursorWrap* cw = (CursorWrap*) (size_t) info[0]->NumberValue(isolate->GetCurrentContext()).FromJust();
-	DbiWrap* dw = cw->dw;
+	DbWrap* dw = cw->dw;
 	dw->getFast = true;
 	slice key, data;
 	int rc = mdb_cursor_get(cw->cursor, &key, &data, cw->iteratingOp);
@@ -65,7 +65,7 @@ void iterateV8(const FunctionCallbackInfo<v8::Value>& info) {
 }
 
 int32_t writeFast(Local<v8::Object> instance, double ewPointer, uint64_t instructionAddress) {
-	EnvWrap* ew = (EnvWrap*) (size_t) ewPointer;
+	DbWrap* ew = (DbWrap*) (size_t) ewPointer;
 	int rc;
 	if (instructionAddress)
 		rc = WriteWorker::DoWrites(ew->writeTxn->txn, ew, (uint32_t*)instructionAddress, nullptr);
@@ -79,7 +79,7 @@ int32_t writeFast(Local<v8::Object> instance, double ewPointer, uint64_t instruc
 }
 void writeV8(const v8::FunctionCallbackInfo<v8::Value>& info) {
 	Isolate* isolate = Isolate::GetCurrent();
-	EnvWrap* ew = (EnvWrap*) (size_t) info[0]->NumberValue(isolate->GetCurrentContext()).FromJust();
+	DbWrap* ew = (DbWrap*) (size_t) info[0]->NumberValue(isolate->GetCurrentContext()).FromJust();
 	uint64_t instructionAddress = info[1]->IntegerValue(isolate->GetCurrentContext()).FromJust();
 	int rc;
 	if (instructionAddress)

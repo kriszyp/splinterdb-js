@@ -2,7 +2,7 @@
 
 using namespace Napi;
 
-TxnTracked::TxnTracked(MDB_txn *txn, unsigned int flags) {
+TxnTracked::TxnTracked(transaction *txn, unsigned int flags) {
 	this->txn = txn;
 	this->flags = flags;
 	parent = nullptr;
@@ -13,7 +13,7 @@ TxnTracked::~TxnTracked() {
 }
 
 TxnWrap::TxnWrap(const Napi::CallbackInfo& info) : ObjectWrap<TxnWrap>(info) {
-	EnvWrap *ew;
+	DbWrap *ew;
 	napi_unwrap(info.Env(), info[0], (void**)&ew);
 	int flags = 0;
 	TxnWrap *parentTw;
@@ -30,7 +30,7 @@ TxnWrap::TxnWrap(const Napi::CallbackInfo& info) : ObjectWrap<TxnWrap>(info) {
 		} else if (info[1].IsNumber()) {
 			flags = info[1].As<Number>();
 		}
-		MDB_txn *parentTxn;
+		transaction *parentTxn;
 		if (info[2].IsObject()) {
 			napi_unwrap(info.Env(), info[2], (void**) &parentTw);
 			parentTxn = parentTw->txn;
@@ -56,19 +56,19 @@ TxnWrap::TxnWrap(const Napi::CallbackInfo& info) : ObjectWrap<TxnWrap>(info) {
 			// if a txn is passed in, we check to see if it is up-to-date and can be reused
 			MDB_envinfo stat;
 			mdb_env_info(ew->env, &stat);
-			if (mdb_txn_id(parentTxn) == stat.me_last_txnid) {
+			if (transaction_id(parentTxn) == stat.me_last_txnid) {
 				txn = nullptr;
 				info.This().As<Object>().Set("address", Number::New(info.Env(), 0));
 				return;
 			}
 			parentTxn = nullptr;
 		}
-		int rc = mdb_txn_begin(ew->env, parentTxn, flags, &txn);
+		int rc = transaction_begin(ew->env, parentTxn, flags, &txn);
 		if (rc == MDB_READERS_FULL) { // try again after reader check, in case a dead process frees a slot
 			int dead;
 			mdb_reader_check(ew->env, &dead);
 			ew->consolidateTxns();
-			rc = mdb_txn_begin(ew->env, parentTxn, flags, &txn);
+			rc = transaction_begin(ew->env, parentTxn, flags, &txn);
 		}
 		if (rc != 0) {
 			txn = nullptr;
@@ -95,12 +95,12 @@ TxnWrap::TxnWrap(const Napi::CallbackInfo& info) : ObjectWrap<TxnWrap>(info) {
 TxnWrap::~TxnWrap() {
 	// Close if not closed already
 	if (this->txn) {
-		mdb_txn_abort(txn);
-		this->removeFromEnvWrap();
+		transaction_abort(txn);
+		this->removeFromDbWrap();
 	}
 }
 
-void TxnWrap::removeFromEnvWrap() {
+void TxnWrap::removeFromDbWrap() {
 	if (this->ew) {
 		if (this->ew->currentWriteTxn == this) {
 			this->ew->currentWriteTxn = this->parentTw;
@@ -126,14 +126,14 @@ Value TxnWrap::commit(const Napi::CallbackInfo& info) {
 		// if (writeWorker->txn && env->writeMap)
 		// rc = 0
 		// else
-		rc = mdb_txn_commit(this->txn);
+		rc = transaction_commit(this->txn);
 		
 		pthread_mutex_unlock(this->ew->writingLock);
 	}
 	else
-		rc = mdb_txn_commit(this->txn);
+		rc = transaction_commit(this->txn);
 	//fprintf(stdout, "commit done\n");
-	this->removeFromEnvWrap();
+	this->removeFromDbWrap();
 
 	if (rc != 0) {
 		return throwLmdbError(info.Env(), rc);
@@ -146,8 +146,8 @@ Value TxnWrap::abort(const Napi::CallbackInfo& info) {
 		return throwError(info.Env(), "The transaction is already closed.");
 	}
 
-	mdb_txn_abort(this->txn);
-	this->removeFromEnvWrap();
+	transaction_abort(this->txn);
+	this->removeFromDbWrap();
 	return info.Env().Undefined();
 }
 NAPI_FUNCTION(resetTxn) {
@@ -167,14 +167,14 @@ void resetTxnFFI(double twPointer) {
 
 void TxnWrap::reset() {
 	ew->readTxnRenewed = false;
-	mdb_txn_reset(txn);
+	transaction_reset(txn);
 }
 Value TxnWrap::renew(const Napi::CallbackInfo& info) {
 	if (!this->txn) {
 		return throwError(info.Env(), "The transaction is already closed.");
 	}
 
-	int rc = mdb_txn_renew(this->txn);
+	int rc = transaction_renew(this->txn);
 	if (rc != 0) {
 		return throwLmdbError(info.Env(), rc);
 	}

@@ -12,11 +12,11 @@ setGetLastVersion(getLastVersion, getLastTxnId);
 let keyBytes, keyBytesView;
 const buffers = [];
 const { onExit, getEnvsPointer, setEnvsPointer, getEnvFlags, setJSFlags } = nativeAddon;
-if (globalThis.__lmdb_envs__)
+/*if (globalThis.__lmdb_envs__)
 	setEnvsPointer(globalThis.__lmdb_envs__);
 else
 	globalThis.__lmdb_envs__ = getEnvsPointer();
-
+*/
 // this is hard coded as an upper limit because it is important assumption of the fixed buffers in writing instructions
 // this corresponds to the max key size for 8KB pages
 const MAX_KEY_SIZE = 4026;

@@ -15,18 +15,18 @@ const int EXCLUSIVE_START = 0x10000;
 CursorWrap::CursorWrap(const CallbackInfo& info) : Napi::ObjectWrap<CursorWrap>(info) {
 	this->keyType = LmdbKeyType::StringKey;
 	this->freeKey = nullptr;
-	this->endKey.mv_size = 0; // indicates no end key (yet)
+	this->endKey.length = 0; // indicates no end key (yet)
 	if (info.Length() < 1) {
 		throwError(info.Env(), "Wrong number of arguments");
 		return;
 	}
 
-	DbiWrap *dw;
+	DbWrap *dw;
 	napi_unwrap(info.Env(), info[0], (void**)&dw);
 
 	// Open the cursor
 	MDB_cursor *cursor;
-	MDB_txn *txn = dw->ew->getReadTxn();
+	transaction *txn = dw->ew->getReadTxn();
 	int rc = mdb_cursor_open(txn, dw->dbi, &cursor);
 	if (rc != 0) {
 		throwLmdbError(info.Env(), rc);
@@ -84,7 +84,7 @@ int CursorWrap::returnEntry(int lastRC, slice &key, slice &data) {
 			return lastRC > 0 ? -lastRC : lastRC;
 		}
 	}
-	if (endKey.mv_size > 0) {
+	if (endKey.length > 0) {
 		int comparison;
 		if (flags & VALUES_FOR_KEY)
 			comparison = mdb_dcmp(txn, dw->dbi, &endKey, &data);
@@ -102,19 +102,19 @@ int CursorWrap::returnEntry(int lastRC, slice &key, slice &data) {
 		if (result) {
 			fits = valToBinaryFast(data, dw); // it fit in the global/compression-target buffer
 		}
-		if (fits || result == 2 || data.mv_size < SHARED_BUFFER_THRESHOLD) {// if it was decompressed
-			*((uint32_t*)keyBuffer) = data.mv_size;
+		if (fits || result == 2 || data.length < SHARED_BUFFER_THRESHOLD) {// if it was decompressed
+			*((uint32_t*)keyBuffer) = data.length;
 			*((uint32_t*)(keyBuffer + 4)) = 0; // buffer id of 0
 		} else {
-			EnvWrap::toSharedBuffer(dw->ew->env, (uint32_t*) dw->ew->keyBuffer, data);
+			DbWrap::toSharedBuffer(dw->ew->env, (uint32_t*) dw->ew->keyBuffer, data);
 		}
 	}
 	if (!(flags & VALUES_FOR_KEY)) {
-		memcpy(keyBuffer + 32, key.mv_data, key.mv_size);
-		*(keyBuffer + 32 + key.mv_size) = 0; // make sure it is null terminated for the sake of better ordered-binary performance
+		memcpy(keyBuffer + 32, key.data, key.length);
+		*(keyBuffer + 32 + key.length) = 0; // make sure it is null terminated for the sake of better ordered-binary performance
 	}
 
-	return key.mv_size;
+	return key.length;
 }
 
 const int START_ADDRESS_POSITION = 4064;
@@ -132,10 +132,10 @@ int32_t CursorWrap::doPosition(uint32_t offset, uint32_t keySize, uint64_t endKe
 	}
 	if (endKeyAddress) {
 		uint32_t* keyBuffer = (uint32_t*) endKeyAddress;
-		endKey.mv_size = *keyBuffer;
-		endKey.mv_data = (char*)(keyBuffer + 1);
+		endKey.length = *keyBuffer;
+		endKey.data = (char*)(keyBuffer + 1);
 	} else
-		endKey.mv_size = 0;
+		endKey.length = 0;
 	iteratingOp = (flags & REVERSE) ?
 		(flags & INCLUDE_VALUES) ?
 			(flags & VALUES_FOR_KEY) ? MDB_PREV_DUP : MDB_PREV :
@@ -143,37 +143,37 @@ int32_t CursorWrap::doPosition(uint32_t offset, uint32_t keySize, uint64_t endKe
 		(flags & INCLUDE_VALUES) ?
 			(flags & VALUES_FOR_KEY) ? MDB_NEXT_DUP : MDB_NEXT :
 			MDB_NEXT_NODUP;
-	key.mv_size = keySize;
-	key.mv_data = dw->ew->keyBuffer;
+	key.length = keySize;
+	key.data = dw->ew->keyBuffer;
 	if (keySize == 0) {
 		rc = mdb_cursor_get(cursor, &key, &data, flags & REVERSE ? MDB_LAST : MDB_FIRST);  
 	} else {
 		if (flags & VALUES_FOR_KEY) { // only values for this key
 			// take the next part of the key buffer as a pointer to starting data
 			uint32_t* startValueBuffer = (uint32_t*)(size_t)(*(double*)(dw->ew->keyBuffer + START_ADDRESS_POSITION));
-			data.mv_size = endKeyAddress ? *((uint32_t*)startValueBuffer) : 0;
-			data.mv_data = startValueBuffer + 1;
+			data.length = endKeyAddress ? *((uint32_t*)startValueBuffer) : 0;
+			data.data = startValueBuffer + 1;
 			slice startValue;
 			if (flags & EXCLUSIVE_START)
 				startValue = data; // save it for comparison
 			if (flags & REVERSE) {// reverse through values
 				startValue = data; // save it for comparison
-				rc = mdb_cursor_get(cursor, &key, &data, data.mv_size ? MDB_GET_BOTH_RANGE : MDB_SET_KEY);
+				rc = mdb_cursor_get(cursor, &key, &data, data.length ? MDB_GET_BOTH_RANGE : MDB_SET_KEY);
 				if (rc) {
-					if (startValue.mv_size) {
+					if (startValue.length) {
 						// value specified, but not found, so find key and go to last item
 						rc = mdb_cursor_get(cursor, &key, &data, MDB_SET_KEY);
 						if (!rc)
 							rc = mdb_cursor_get(cursor, &key, &data, MDB_LAST_DUP);
 					} // else just couldn't find the key
 				} else { // found entry
-					if (startValue.mv_size == 0) // no value specified, so go to last value
+					if (startValue.length == 0) // no value specified, so go to last value
 						rc = mdb_cursor_get(cursor, &key, &data, MDB_LAST_DUP);
 					else if (mdb_dcmp(txn, dw->dbi, &startValue, &data)) // the range found the next value *after* the start
 						rc = mdb_cursor_get(cursor, &key, &data, MDB_PREV_DUP);
 				}
 			} else // forward, just do a get by range
-				rc = mdb_cursor_get(cursor, &key, &data, data.mv_size ?
+				rc = mdb_cursor_get(cursor, &key, &data, data.length ?
 					(flags & EXACT_MATCH) ? MDB_GET_BOTH : MDB_GET_BOTH_RANGE : MDB_SET_KEY);
 
 			if (rc == MDB_NOTFOUND)
@@ -237,7 +237,7 @@ int32_t CursorWrap::doPosition(uint32_t offset, uint32_t keySize, uint64_t endKe
 		}
 
 		while (!rc) {
-			if (endKey.mv_size > 0) {
+			if (endKey.length > 0) {
 				int comparison;
 				if (flags & VALUES_FOR_KEY)
 					comparison = mdb_dcmp(txn, dw->dbi, &endKey, &data);
@@ -282,7 +282,7 @@ NAPI_FUNCTION(position) {
 }
 int32_t positionFFI(double cwPointer, uint32_t flags, uint32_t offset, uint32_t keySize, uint64_t endKeyAddress) {
 	CursorWrap* cw = (CursorWrap*) (size_t) cwPointer;
-	DbiWrap* dw = cw->dw;
+	DbWrap* dw = cw->dw;
 	dw->getFast = true;
 	cw->flags = flags;
 	return cw->doPosition(offset, keySize, endKeyAddress);
@@ -299,7 +299,7 @@ NAPI_FUNCTION(iterate) {
 
 int32_t iterateFFI(double cwPointer) {
 	CursorWrap* cw = (CursorWrap*) (size_t) cwPointer;
-	DbiWrap* dw = cw->dw;
+	DbWrap* dw = cw->dw;
 	dw->getFast = true;
 	slice key, data;
 	int rc = mdb_cursor_get(cw->cursor, &key, &data, cw->iteratingOp);
@@ -328,8 +328,8 @@ NAPI_FUNCTION(getCurrentShared) {
 	if (rc)
 		RETURN_INT32(cw->returnEntry(rc, key, data));
 	getVersionAndUncompress(data, cw->dw);
-	napi_create_external_buffer(env, data.mv_size,
-		(char*) data.mv_data, noopCursor, nullptr, &returnValue);
+	napi_create_external_buffer(env, data.length,
+		(char*) data.data, noopCursor, nullptr, &returnValue);
 	return returnValue;
 }
 

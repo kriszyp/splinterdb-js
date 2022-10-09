@@ -46,7 +46,7 @@ const int TXN_DELIMITER = 0x8000000;
 const int TXN_COMMITTED = 0x10000000;
 //const int TXN_FLUSHED = 0x20000000;
 const int WAITING_OPERATION = 0x2000000;
-const int IF_NO_EXISTS = MDB_NOOVERWRITE; //0x10;
+const int IF_NO_EXISTS = 0x10;
 // result codes:
 const int FAILED_CONDITION = 0x4000000;
 const int FINISHED_OPERATION = 0x1000000;
@@ -59,17 +59,17 @@ WriteWorker::~WriteWorker() {
 		envForTxn->writeWorker = nullptr;
 }
 
-WriteWorker::WriteWorker(MDB_env* env, EnvWrap* envForTxn, uint32_t* instructions)
+WriteWorker::WriteWorker(transactional_splinterdb* db, DbWrap* envForTxn, uint32_t* instructions)
 		: envForTxn(envForTxn),
 		instructions(instructions),
-		env(env) {
+		db(db) {
 	//fprintf(stdout, "nextCompressibleArg %p\n", nextCompressibleArg);
 		interruptionStatus = 0;
 		txn = nullptr;
 	}
 
-AsyncWriteWorker::AsyncWriteWorker(MDB_env* env, EnvWrap* envForTxn, uint32_t* instructions, const Function& callback)
-		: WriteWorker(env, envForTxn, instructions), AsyncProgressWorker(callback, "lmdb:write") {
+AsyncWriteWorker::AsyncWriteWorker(transactional_splinterdb* db, DbWrap* envForTxn, uint32_t* instructions, const Function& callback)
+		: WriteWorker(db, envForTxn, instructions), AsyncProgressWorker(callback, "splinterdb:write") {
 	//fprintf(stdout, "nextCompressibleArg %p\n", nextCompressibleArg);
 		interruptionStatus = 0;
 		txn = nullptr;
@@ -85,7 +85,7 @@ void WriteWorker::SendUpdate() {
 void AsyncWriteWorker::SendUpdate() {
 	executionProgress->Send(nullptr, 0);
 }
-MDB_txn* WriteWorker::AcquireTxn(int* flags) {
+transaction* WriteWorker::AcquireTxn(int* flags) {
 	bool commitSynchronously = *flags & TXN_SYNCHRONOUS_COMMIT;
 	
 	// TODO: if the conditionDepth is 0, we could allow the current worker's txn to be continued, committed and restarted
@@ -128,7 +128,7 @@ void AsyncWriteWorker::ReportError(const char* error) {
 	hasError = true;
 	SetError(error);
 }
-int WriteWorker::WaitForCallbacks(MDB_txn** txn, bool allowCommit, uint32_t* target) {
+int WriteWorker::WaitForCallbacks(transaction* txn, bool allowCommit, uint32_t* target) {
 	int rc;
 	//fprintf(stderr, "wait for callback %p\n", target);
 	if (!finishedProgress)
@@ -153,16 +153,16 @@ int WriteWorker::WaitForCallbacks(MDB_txn** txn, bool allowCommit, uint32_t* tar
 	if (interruptionStatus == INTERRUPT_BATCH) { // interrupted by JS code that wants to run a synchronous transaction
 	//	fprintf(stderr, "Performing batch interruption %u\n", allowCommit);
 		interruptionStatus = RESTART_WORKER_TXN;
-		rc = mdb_txn_commit(*txn);
+		rc = transactional_splinterdb_commit(db, txn);
 		if (rc == 0) {
 			// wait again until the sync transaction is completed
 			//fprintf(stderr, "Waiting after interruption\n");
-			this->txn = *txn = nullptr;
+			this->txn = txn = nullptr;
 			pthread_cond_signal(envForTxn->writingCond);
 			pthread_cond_wait(envForTxn->writingCond, envForTxn->writingLock);
 			// now restart our transaction
-			rc = mdb_txn_begin(env, nullptr, 0, txn);
-			this->txn = *txn;
+			rc = transactional_splinterdb_begin(db, txn);
+			this->txn = txn;
 			//fprintf(stderr, "Restarted txn after interruption\n");
 			interruptionStatus = 0;
 		}
@@ -174,18 +174,20 @@ int WriteWorker::WaitForCallbacks(MDB_txn** txn, bool allowCommit, uint32_t* tar
 		interruptionStatus = 0;
 	return 0;
 }
-int WriteWorker::DoWrites(MDB_txn* txn, EnvWrap* envForTxn, uint32_t* instruction, WriteWorker* worker) {
-	slice key, value;
+int WriteWorker::DoWrites(transaction* txn, DbWrap* envForTxn, uint32_t* instruction, WriteWorker* worker) {
+	slice key;
+	slice value;
 	int rc = 0;
 	int conditionDepth = 0;
 	int validatedDepth = 0;
 	double conditionalVersion, setVersion = 0;
 	bool overlappedWord = !!worker;
 	uint32_t* start;
-		do {
+	transactional_splinterdb* db = envForTxn->db;
+	do {
 next_inst:	start = instruction++;
 		uint32_t flags = *start;
-		MDB_dbi dbi = 0;
+		int dbi = 0;
 		bool validated = conditionDepth == validatedDepth;
 		if (flags & 0xf0c0) {
 			fprintf(stderr, "Unknown flag bits %u %p\n", flags, start);
@@ -195,10 +197,10 @@ next_inst:	start = instruction++;
 		}
 		if (flags & HAS_KEY) {
 			// a key based instruction, get the key
-			dbi = (MDB_dbi) *instruction++;
-			key.mv_size = *instruction++;
-			key.mv_data = instruction;
-			instruction = (uint32_t*) (((size_t) instruction + key.mv_size + 16) & (~7));
+			dbi = (int) *instruction++;
+			key.length = *instruction++;
+			key.data = instruction;
+			instruction = (uint32_t*) (((size_t) instruction + key.length + 16) & (~7));
 			if (flags & HAS_VALUE) {
 				if (flags & COMPRESSIBLE) {
 					int64_t status = -1;
@@ -215,14 +217,14 @@ next_inst:	start = instruction++;
 						((Compression*) (size_t) *((double*)&status))->compressInstruction(nullptr, (double*) (instruction + 2));
 					} // else status is 0 and compression is done
 					// compressed
-					value.mv_data = (void*)(size_t) * ((size_t*)instruction);
-					if ((size_t)value.mv_data > 0x1000000000000)
-						fprintf(stderr, "compression not completed %p %i\n", value.mv_data, (int) status);
-					value.mv_size = *(instruction - 1);
+					value.data = (void*)(size_t) * ((size_t*)instruction);
+					if ((size_t)value.data > 0x1000000000000)
+						fprintf(stderr, "compression not completed %p %i\n", value.data, (int) status);
+					value.length = *(instruction - 1);
 					instruction += 4; // skip compression pointers
 				} else {
-					value.mv_data = (void*)(size_t) * ((double*)instruction);
-					value.mv_size = *(instruction - 1);
+					value.data = (void*)(size_t) * ((double*)instruction);
+					value.length = *(instruction - 1);
 					instruction += 2;
 				}
 			}
@@ -230,14 +232,14 @@ next_inst:	start = instruction++;
 				conditionalVersion = *((double*) instruction);
 				instruction += 2;
 				slice conditionalValue;
-				rc = mdb_get(txn, dbi, &key, &conditionalValue);
+				rc = 0;//transactional_splinterdb_lookup(txn, dbi, &key, &conditionalValue);
 				if (rc) {
 				    // not found counts as version 0, so this is acceptable for conditional less than,
 				    // otherwise does not validate
-                    validated = rc == MDB_NOTFOUND && (flags & CONDITIONAL_ALLOW_NOTFOUND);
+                    validated = rc == 0;//MDB_NOTFOUND && (flags & CONDITIONAL_ALLOW_NOTFOUND);
 				} else if (conditionalVersion != ANY_VERSION) {
 					double version;
-					memcpy(&version, conditionalValue.mv_data, 8);
+					memcpy(&version, conditionalValue.data, 8);
 					validated = validated && ((flags & CONDITIONAL_VERSION_LESS_THAN) ? version <= conditionalVersion : (version == conditionalVersion));
 				}
 			}
@@ -246,8 +248,8 @@ next_inst:	start = instruction++;
 				instruction += 2;
 			}
 			if ((flags & IF_NO_EXISTS) && (flags & START_CONDITION_BLOCK)) {
-				rc = mdb_get(txn, dbi, &key, &value);
-				validated = validated && rc == MDB_NOTFOUND;
+				rc = 0;// mdb_get(txn, dbi, &key, &value);
+				validated = validated && rc == 0;//MDB_NOTFOUND;
 			}
 		} else
 			instruction++;
@@ -262,7 +264,7 @@ next_inst:	start = instruction++;
 					if (std::atomic_compare_exchange_strong((std::atomic<uint32_t>*) start,
 							(uint32_t*) &flags,
 							(uint32_t)WAITING_OPERATION)) {
-						worker->WaitForCallbacks(&txn, conditionDepth == 0, start);
+						worker->WaitForCallbacks(txn, conditionDepth == 0, start);
 					}
 					goto next_inst;
 				} else {
@@ -284,23 +286,23 @@ next_inst:	start = instruction++;
 				goto next_inst;
 			case PUT:
 				if (flags & SET_VERSION)
-					rc = putWithVersion(txn, dbi, &key, &value, flags & (MDB_NOOVERWRITE | MDB_NODUPDATA | MDB_APPEND | MDB_APPENDDUP), setVersion);
+					rc = putWithVersion(db, txn, &key, &value, flags, setVersion);
 				else
-					rc = mdb_put(txn, dbi, &key, &value, flags & (MDB_NOOVERWRITE | MDB_NODUPDATA | MDB_APPEND | MDB_APPENDDUP));
+					rc = transactional_splinterdb_insert(db, txn, key, value);
 				if (flags & COMPRESSIBLE)
-					free(value.mv_data);
-				//fprintf(stdout, "put %u \n", key.mv_size);
+					free((void*) value.data);
+				//fprintf(stdout, "put %u \n", key.length);
 				break;
 			case DEL:
-				rc = mdb_del(txn, dbi, &key, nullptr);
+				rc = transactional_splinterdb_delete(db, txn, key);
 				break;
 			case DEL_VALUE:
-				rc = mdb_del(txn, dbi, &key, &value);
+				rc = transactional_splinterdb_delete(db, txn, key);
 				if (flags & COMPRESSIBLE)
-					free(value.mv_data);
+					free((void*) value.data);
 				break;
 			case START_BLOCK: case START_CONDITION_BLOCK:
-				rc = validated ? 0 : MDB_NOTFOUND;
+				rc = 0;//validated ? 0 : MDB_NOTFOUND;
 				if (validated)
 					validatedDepth++;
 				conditionDepth++;
@@ -312,12 +314,12 @@ next_inst:	start = instruction++;
 				if (flags & USER_CALLBACK_STRICT_ORDER) {
 					std::atomic_fetch_or((std::atomic<uint32_t>*) start, (uint32_t) FINISHED_OPERATION); // mark it as finished so it is processed
 					while (!worker->finishedProgress) {
-						worker->WaitForCallbacks(&txn, conditionDepth == 0, nullptr);
+						worker->WaitForCallbacks(txn, conditionDepth == 0, nullptr);
 					}
 				}
 				break;
 			case DROP_DB:
-				rc = mdb_drop(txn, dbi, (flags & DELETE_DATABASE) ? 1 : 0);
+				//rc = mdb_drop(txn, dbi, (flags & DELETE_DATABASE) ? 1 : 0);
 				break;
 			case POINTER_NEXT:
 				instruction = (uint32_t*)(size_t) * ((double*)instruction);
@@ -329,13 +331,13 @@ next_inst:	start = instruction++;
 				return 22;
 			}
 			if (rc) {
-				if (!(rc == MDB_KEYEXIST || rc == MDB_NOTFOUND)) {
+				/*if (!(rc == MDB_KEYEXIST || rc == MDB_NOTFOUND)) {
 					if (worker) {
-						worker->ReportError(mdb_strerror(rc));
+						worker->ReportError("error in splinterdb");
 					} else {
 						return rc;
 					}
-				}
+				}*/
 				flags = FINISHED_OPERATION | FAILED_CONDITION;
 			}
 			else
@@ -357,47 +359,28 @@ void WriteWorker::Write() {
 	int rc;
 	finishedProgress = true;
 	unsigned int envFlags;
-	mdb_env_get_flags(env, &envFlags);
-	time_t now = time(0);
-	if (now - envForTxn->lastReaderCheck > READER_CHECK_INTERVAL) {
-		int dead;
-		mdb_reader_check(env, &dead);
-		envForTxn->lastReaderCheck = now;
-	}
 	pthread_mutex_lock(envForTxn->writingLock);
 	#ifndef _WIN32
 	int retries = 0;
 	retry:
 	#endif
-	rc = mdb_txn_begin(env, nullptr,
-	#ifdef MDB_OVERLAPPINGSYNC
-		(envForTxn->jsFlags & MDB_OVERLAPPINGSYNC) ? MDB_NOSYNC :
-	#endif
-		0, &txn);
-	#if !defined(_WIN32) && defined(MDB_RPAGE_CACHE)
-	if (rc == MDB_LOCK_FAILURE) {
-		if (retries++ < 4) {
-			sleep(1);
-			goto retry;
-		}
-	}
-	#endif
+	rc = transactional_splinterdb_begin(db, txn);
 	if (rc != 0) {
-		return ReportError(mdb_strerror(rc));
+		return ReportError("error in splinterdb");
 	}
 	hasError = false;
 	rc = DoWrites(txn, envForTxn, instructions, this);
-	uint32_t txnId = (uint32_t) mdb_txn_id(txn);
+	uint32_t txnId = 0;// (uint32_t) transaction_id(txn);
 	if (rc || hasError)
-		mdb_txn_abort(txn);
+		transactional_splinterdb_abort(db, txn);
 	else
-		rc = mdb_txn_commit(txn);
+		rc = transactional_splinterdb_commit(db, txn);
 	txn = nullptr;
 	pthread_mutex_unlock(envForTxn->writingLock);
 	if (rc || hasError) {
 		std::atomic_fetch_or((std::atomic<uint32_t>*) instructions, (uint32_t) TXN_HAD_ERROR);
 		if (rc)
-			ReportError(mdb_strerror(rc));
+			ReportError("error in splinterdb");
 		return;
 	}
 	*(instructions + 1) = txnId;
@@ -432,22 +415,22 @@ void AsyncWriteWorker::OnOK() {
 	napi_call_function(Env(), Env().Undefined(), Callback().Value(), 1, &arg, &result);
 }
 
-Value EnvWrap::startWriting(const Napi::CallbackInfo& info) {
-	if (!this->env) {
+Value DbWrap::startWriting(const Napi::CallbackInfo& info) {
+	if (!this->db) {
 		return throwError(info.Env(), "The environment is already closed.");
 	}
 	size_t instructionAddress = info[0].As<Number>().Int64Value();
-	AsyncWriteWorker* worker = new AsyncWriteWorker(this->env, this, (uint32_t*) instructionAddress, info[1].As<Function>());
+	AsyncWriteWorker* worker = new AsyncWriteWorker(this->db, this, (uint32_t*) instructionAddress, info[1].As<Function>());
 	this->writeWorker = worker;
 	worker->Queue();
 	return info.Env().Undefined();
 }
 
-NAPI_FUNCTION(EnvWrap::write) {
+NAPI_FUNCTION(DbWrap::write) {
 	ARGS(2)
 	GET_INT64_ARG(0);
-	EnvWrap* ew = (EnvWrap*) i64;
-	if (!ew->env) {
+	DbWrap* ew = (DbWrap*) i64;
+	if (!ew->db) {
 		napi_throw_error(env, nullptr, "The environment is already closed.");
 		RETURN_UNDEFINED;
 	}
@@ -460,9 +443,9 @@ NAPI_FUNCTION(EnvWrap::write) {
 	else if (ew->writeWorker) {
 		pthread_cond_signal(ew->writingCond);
 	}
-	if (rc && !(rc == MDB_KEYEXIST || rc == MDB_NOTFOUND)) {
+	/*if (rc && !(rc == MDB_KEYEXIST || rc == MDB_NOTFOUND)) {
 		throwLmdbError(env, rc);
 		RETURN_UNDEFINED;
-	}
+	}*/
 	RETURN_UNDEFINED;
 }

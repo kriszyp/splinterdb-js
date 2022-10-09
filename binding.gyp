@@ -29,11 +29,12 @@
     {
       "target_name": "splinterdb",
       "sources": [
-        "dependencies/splinterdb/src/util.c",
         "src/splinterdb-js.cpp",
         "dependencies/lz4/lib/lz4.h",
         "dependencies/lz4/lib/lz4.c",
+        "src/misc.cpp",
         "src/env.cpp",
+        "src/writer.cpp",
       ],
       "include_dirs": [
         "<!(node -p \"require('node-addon-api').include_dir\")",
@@ -43,6 +44,7 @@
         "dependencies/xxHash",
         "dependencies/lz4/lib"
       ],
+      "libraries": ["~/dev/splinterdb-js/dependencies/splinterdb/build/release/lib/libsplinterdb.a", "-lm", "-lpthread","-laio", "-lxxhash"],
       "defines": ["SPLINTERDB_PLATFORM_DIR=platform_linux", "NAPI_DISABLE_CPP_EXCEPTIONS" ],
       "conditions": [
         ["OS=='linux'", {

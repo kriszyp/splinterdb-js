@@ -5,10 +5,10 @@ const ITERATOR_DONE = { done: true, value: undefined };
 const Uint8ArraySlice = Uint8Array.prototype.slice;
 const Uint8A = typeof Buffer != 'undefined' ? Buffer.allocUnsafeSlow : Uint8Array
 let getValueBytes = globalBuffer;
-if (!getValueBytes.maxLength) {
+/*if (!getValueBytes.maxLength) {
 	 getValueBytes.maxLength = getValueBytes.length;
 	 Object.defineProperty(getValueBytes, 'length', { value: getValueBytes.length, writable: true, configurable: true });
-}
+}*/
 const START_ADDRESS_POSITION = 4064;
 const NEW_BUFFER_THRESHOLD = 0x8000;
 export const UNMODIFIED = {};
@@ -683,13 +683,13 @@ export function makeReusableBuffer(size) {
 	return bytes;
 }
 
-Txn.prototype.done = function() {
+/*Txn.prototype.done = function() {
 	this.refCount--;
 	if (this.refCount == 0 && this.onlyCursor) {
 		this.abort();
 		this.isDone = true;
 	}
-}
+}*/
 
 
 let readInstructions, uint32Instructions, instructionsDataView = { setFloat64() {}, setUint32() {} }, instructionsAddress;

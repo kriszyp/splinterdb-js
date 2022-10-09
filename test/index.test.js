@@ -64,11 +64,11 @@ describe('lmdb-js', function() {
 				batchStartThreshold: 10,
 				maxReaders: 100,
 				keyEncoder: orderedBinaryEncoder,
-				compression: {
+				/*compression: {
 					threshold: 256,
-				},
+				},*/
 			}, options));
-			if (!options.checkLast)
+			/*if (!options.checkLast)
 				db.clearSync();
 			db2 = db.openDB(Object.assign({
 				name: 'mydb2',
@@ -84,7 +84,7 @@ describe('lmdb-js', function() {
 				encoding: 'ordered-binary',
 			});
 			if (!options.checkLast)
-				db3.clearSync();
+				db3.clearSync();*/
 		});
 		if (options.checkLast) {
 			it('encrypted data can not be accessed', function() {
@@ -93,6 +93,10 @@ describe('lmdb-js', function() {
 			})
 			return
 		}
+		it.only('simple put', function() {
+			db.putSync('key', 'value');
+			console.log(db.get('key'));
+		});
 		it('will not open non-existent db with create disabled', function() {
 			let noDb = db.open({
 				name: 'not-there',

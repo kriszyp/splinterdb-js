@@ -14,21 +14,21 @@ Object InitAll(Napi::Env env, Object exports) {
 	//if (Logging::debugLogging)
 		fprintf(stderr, "Start initialization\n");
 	// Initializes the module
-	// Export Env as constructor for EnvWrap
-	EnvWrap::setupExports(env, exports);
+	// Export Env as constructor for DbWrap
+	DbWrap::setupExports(env, exports);
 /*
 	// Export Cursor as constructor for CursorWrap
 	CursorWrap::setupExports(env, exports);
 	TxnWrap::setupExports(env, exports);
-	DbiWrap::setupExports(env, exports);
+	DbWrap::setupExports(env, exports);
 	CursorWrap::setupExports(env, exports);
 	Compression::setupExports(env, exports);
 
-	// Export misc things
+	// Export misc things*/
 	setupExportMisc(env, exports);
 	if (Logging::debugLogging)
 		fprintf(stderr, "Finished initialization\n");
-	return exports;*/
+	return exports;
 }
 NAPI_MODULE_INIT() {
 	Value exp = Value::From(env, exports);
