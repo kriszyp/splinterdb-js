@@ -29,13 +29,31 @@
     {
       "target_name": "splinterdb",
       "sources": [
+        "dependencies/splinterdb/src/btree.c",
+        "dependencies/splinterdb/src/clockcache.c",
+        "dependencies/splinterdb/src/data_internal.c",
+        "dependencies/splinterdb/src/default_data_config.c",
+        "dependencies/splinterdb/src/lock_table.c",
+        "dependencies/splinterdb/src/memtable.c",
+        "dependencies/splinterdb/src/merge.c",
+        "dependencies/splinterdb/src/mini_allocator.c",
+        "dependencies/splinterdb/src/routing_filter.c",
+        "dependencies/splinterdb/src/splinterdb.c",
+        "dependencies/splinterdb/src/task.c",
+        "dependencies/splinterdb/src/tictoc_data.c",
+        "dependencies/splinterdb/src/transaction.c",
+        "dependencies/splinterdb/src/transaction_data_config.c",
+        "dependencies/splinterdb/src/trunk.c",
+        "dependencies/splinterdb/src/util.c",
+        "dependencies/splinterdb/src/platform_linux/laio.c",
+        "dependencies/splinterdb/src/platform_linux/platform.c",
+        "dependencies/splinterdb/src/interval_tree/rbtree.c",
+        "dependencies/xxHash/xxhash.c",
         "src/splinterdb-js.cpp",
         "dependencies/lz4/lib/lz4.h",
         "dependencies/lz4/lib/lz4.c",
         "src/misc.cpp",
         "src/env.cpp",
-        "src/writer.cpp",
-        "src/txn.cpp",
       ],
       "include_dirs": [
         "<!(node -p \"require('node-addon-api').include_dir\")",
@@ -45,8 +63,7 @@
         "dependencies/xxHash",
         "dependencies/lz4/lib"
       ],
-      "libraries": ["~/dev/splinterdb-js/dependencies/splinterdb/build/release/lib/libsplinterdb.a", "-lm", "-lpthread","-laio", "-lxxhash"],
-      "defines": ["SPLINTERDB_PLATFORM_DIR=platform_linux", "NAPI_DISABLE_CPP_EXCEPTIONS" ],
+      "defines": ["SPLINTERDB_PLATFORM_DIR=platform_linux", "MAX_KEY_SIZE=100", "GIT_VERSION=1.0", "NAPI_DISABLE_CPP_EXCEPTIONS" ],
       "conditions": [
         ["OS=='linux'", {
           "variables": {

@@ -286,7 +286,7 @@ next_inst:	start = instruction++;
 				goto next_inst;
 			case PUT:
 				if (flags & SET_VERSION)
-					rc = putWithVersion(db, txn, &key, &value, flags, setVersion);
+					rc = putWithVersion(db, txn, key, value, flags, setVersion);
 				else
 					rc = transactional_splinterdb_insert(db, txn, key, value);
 				if (flags & COMPRESSIBLE)
@@ -364,6 +364,7 @@ void WriteWorker::Write() {
 	int retries = 0;
 	retry:
 	#endif
+	txn = new transaction;
 	rc = transactional_splinterdb_begin(db, txn);
 	if (rc != 0) {
 		return ReportError("error in splinterdb");
@@ -439,7 +440,7 @@ NAPI_FUNCTION(DbWrap::write) {
 	uint32_t* instructionAddress = (uint32_t*) i64;
 	int rc = 0;
 	if (instructionAddress)
-		rc = WriteWorker::DoWrites(ew->writeTxn->txn, ew, instructionAddress, nullptr);
+		rc = WriteWorker::DoWrites(&ew->txn, ew, instructionAddress, nullptr);
 	else if (ew->writeWorker) {
 		pthread_cond_signal(ew->writingCond);
 	}

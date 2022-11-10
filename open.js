@@ -43,7 +43,7 @@ export function open(path, options) {
 			deleteOnClose: true,
 			noSync: true,
 		}, options);
-		path = tmpdir() + '/' + Math.floor(Math.random() * 2821109907455).toString(36) + '.mdb'
+		path = tmpdir() + '/' + Math.floor(Math.random() * 2821109907455).toString(36) + '.spdb'
 	} else if (!options)
 		options = {};
 	let extension = pathModule.extname(path);
@@ -114,9 +114,11 @@ export function open(path, options) {
    if (rc)
 		lmdbError(rc);
 	delete options.keyBytes // no longer needed, don't copy to stores
-	let maxKeySize = env.getMaxKeySize();
+	let maxKeySize = 100;//env.getMaxKeySize();
 	maxKeySize = Math.min(maxKeySize, options.pageSize ? MAX_KEY_SIZE : DEFAULT_MAX_KEY_SIZE);
-	flags = getEnvFlags(env.address); // re-retrieve them, they are not necessarily the same if we are connecting to an existing env
+	/*flags = getEnvFlags(env.address); // re-retrieve them, they are not necessarily the same if we are connecting
+	 to an existing env
+
 	if (flags & 0x1000) {
 		if (userOptions.noSync) {
 			env.close();
@@ -138,7 +140,7 @@ export function open(path, options) {
 		hasRegisteredOnExit = true;
 		process.on('exit', onExit);
 	}
-
+*/
 	class LMDBStore extends EventEmitter {
 		constructor(dbName, dbOptions) {
 			super();
@@ -175,26 +177,6 @@ export function open(path, options) {
 			if (keyType == 2)
 				flags |= 0x08; // integer key
 
-			if (options.readOnly) {
-				// in read-only mode we use a read-only txn to open the database
-				// TODO: LMDB is actually not entirely thread-safe when it comes to opening databases with
-				// read-only transactions since there is a race condition on setting the update dbis that
-				// occurs outside the lock
-				// make sure we are using a fresh read txn, so we don't want to share with a cursor txn
-				this.resetReadTxn();
-				this.ensureReadTxn();
-				this.db = new Dbi(env, flags, dbName, keyType, dbOptions.compression);
-			} else {
-				this.transactionSync(() => {
-					this.db = new Dbi(env, flags, dbName, keyType, dbOptions.compression);
-				}, options.overlappingSync ? 0x10002 : 2); // no flush-sync, but synchronously commit
-			}
-			this._commitReadTxn(); // current read transaction becomes invalid after opening another db
-			if (!this.db || this.db.dbi == 0xffffffff) {// not found
-				throw new Error('Database not found')
-			}
-			this.dbAddress = this.db.address
-			this.db.name = dbName || null;
 			this.name = dbName;
 			this.status = 'open';
 			this.env = env;
@@ -238,7 +220,6 @@ export function open(path, options) {
 			this.maxKeySize = maxKeySize;
 			applyKeyHandling(this);
 			allDbs.set(dbName ? name + '-' + dbName : name, this);
-			stores.push(this);
 		}
 		openDB(dbName, dbOptions) {
 			if (this.dupSort && this.name == null)

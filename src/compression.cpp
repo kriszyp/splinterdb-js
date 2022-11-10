@@ -16,7 +16,7 @@ Compression::Compression(const CallbackInfo& info) : ObjectWrap<Compression>(inf
 				throwError(info.Env(), "Dictionary must be a buffer");
 				return;
 			}
-			napi_get_typedarray_info(info.Env(), dictionaryOption, nullptr, &dictSize, (void**) &dictionary, nullptr, nullptr);
+			napi_get_buffer_info(info.Env(), dictionaryOption, (void**) &dictionary, &dictSize);
 			dictSize = (dictSize >> 3) << 3; // make sure it is word-aligned
 		}
 		auto thresholdOption = info[0].As<Object>().Get("threshold");
@@ -34,9 +34,10 @@ Compression::Compression(const CallbackInfo& info) : ObjectWrap<Compression>(inf
 }
 
 Napi::Value Compression::setBuffer(const CallbackInfo& info) {
-	napi_get_typedarray_info(info.Env(), info[0], nullptr, nullptr, (void**) &this->decompressTarget, nullptr, nullptr);
+	size_t length;
+	napi_get_buffer_info(info.Env(), info[0], (void**) &this->decompressTarget, &length);
 	this->decompressSize = info[1].As<Number>();
-	napi_get_typedarray_info(info.Env(), info[2], nullptr, nullptr, (void**) &this->dictionary, nullptr, nullptr);
+	napi_get_buffer_info(info.Env(), info[2], (void**) &this->dictionary, &length);
 	this->dictionarySize = info[3].As<Number>();
 	return info.Env().Undefined();
 }

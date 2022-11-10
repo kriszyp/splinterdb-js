@@ -16,10 +16,10 @@ Object InitAll(Napi::Env env, Object exports) {
 	// Initializes the module
 	// Export Env as constructor for DbWrap
 	DbWrap::setupExports(env, exports);
+	TxnWrap::setupExports(env, exports);
 /*
 	// Export Cursor as constructor for CursorWrap
 	CursorWrap::setupExports(env, exports);
-	TxnWrap::setupExports(env, exports);
 	DbWrap::setupExports(env, exports);
 	CursorWrap::setupExports(env, exports);
 	Compression::setupExports(env, exports);

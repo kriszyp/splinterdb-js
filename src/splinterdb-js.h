@@ -183,8 +183,8 @@ Value valToBinary(slice &data);
 Value valToBinaryUnsafe(slice &data, DbWrap* ew, Env env);
 
 int putWithVersion(transactional_splinterdb* db, transaction *   txn,
-		slice *   key,
-		slice *   data,
+		slice   key,
+		slice   data,
 		unsigned int	flags, double version);
 
 Napi::Value throwLmdbError(Napi::Env env, int rc);
@@ -305,7 +305,7 @@ public:
 	char* keyBuffer;
 	int pageSize;
 	time_t lastReaderCheck;
-	transaction* getReadTxn();
+	transaction* getReadTxn(int64_t tw_address);
 	bool hasVersions;
 	// compression settings and space
 	Compression *compression;
@@ -336,6 +336,7 @@ public:
 
 	Napi::Value beginTxn(const CallbackInfo& info);
 	Napi::Value commitTxn(const CallbackInfo& info);
+	int32_t doGetByBinary(uint32_t keySize, uint32_t ifNotTxnId, int64_t txnWrapAddress);
 
 	/*
 		Performs a set of operations asynchronously, automatically wrapping it in its own transaction
@@ -383,7 +384,7 @@ public:
 	~TxnWrap();
 
 	// The wrapped object
-	transaction *txn;
+	transaction txn;
 
 	// Remove the current TxnWrap from its DbWrap
 	void removeFromDbWrap();

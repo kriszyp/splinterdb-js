@@ -14,11 +14,12 @@ TxnTracked::~TxnTracked() {
 
 TxnWrap::TxnWrap(const Napi::CallbackInfo& info) : ObjectWrap<TxnWrap>(info) {
 	DbWrap *ew;
+	db = ew->db;
 	napi_unwrap(info.Env(), info[0], (void**)&ew);
 	int flags = 0;
 	TxnWrap *parentTw;
 	if (info[1].IsBoolean() && ew->writeWorker) { // this is from a transaction callback
-		txn = ew->writeWorker->AcquireTxn(&flags);
+		//txn = ew->writeWorker->AcquireTxn(&flags);
 		parentTw = nullptr;
 	} else {
 		if (info[1].IsObject()) {
@@ -26,33 +27,20 @@ TxnWrap::TxnWrap(const Napi::CallbackInfo& info) : ObjectWrap<TxnWrap>(info) {
 
 			// Get flags from options
 
-			setFlagFromValue(&flags, MDB_RDONLY, "readOnly", false, options);
+			setFlagFromValue(&flags, 1, "readOnly", false, options);
 		} else if (info[1].IsNumber()) {
 			flags = info[1].As<Number>();
 		}
 		transaction *parentTxn;
 		if (info[2].IsObject()) {
 			napi_unwrap(info.Env(), info[2], (void**) &parentTw);
-			parentTxn = parentTw->txn;
+		//	parentTxn = parentTw->txn;
 		} else {
 			parentTxn = nullptr;
 			parentTw = nullptr;
-			// Check existence of current write transaction
-			if (0 == (flags & MDB_RDONLY)) {
-				if (ew->currentWriteTxn != nullptr) {
-					throwError(info.Env(), "You have already opened a write transaction in the current process, can't open a second one.");
-					return;
-				}
-				//fprintf(stderr, "begin sync txn");
-				auto writeWorker = ew->writeWorker;
-				if (writeWorker) {
-					parentTxn = writeWorker->AcquireTxn(&flags); // see if we have a paused transaction
-					// else we create a child transaction from the current batch transaction. TODO: Except in WRITEMAP mode, where we need to indicate that the transaction should not be committed
-				}
-			}
 		}
 		//fprintf(stderr, "txn_begin from txn.cpp %u %p\n", flags, parentTxn);
-		if ((flags & MDB_RDONLY) && parentTxn) {
+		/*if ((flags & MDB_RDONLY) && parentTxn) {
 			// if a txn is passed in, we check to see if it is up-to-date and can be reused
 			MDB_envinfo stat;
 			mdb_env_info(ew->env, &stat);
@@ -62,42 +50,36 @@ TxnWrap::TxnWrap(const Napi::CallbackInfo& info) : ObjectWrap<TxnWrap>(info) {
 				return;
 			}
 			parentTxn = nullptr;
-		}
-		int rc = transaction_begin(ew->env, parentTxn, flags, &txn);
-		if (rc == MDB_READERS_FULL) { // try again after reader check, in case a dead process frees a slot
-			int dead;
-			mdb_reader_check(ew->env, &dead);
-			ew->consolidateTxns();
-			rc = transaction_begin(ew->env, parentTxn, flags, &txn);
-		}
+		}*/
+		int rc = transactional_splinterdb_begin(db, &txn);
 		if (rc != 0) {
-			txn = nullptr;
-			throwLmdbError(info.Env(), rc);
+		//	txn = nullptr;
+//			throwLmdbError(info.Env(), rc);
 			return;
 		}
 	}
 
 	// Set the current write transaction
-	if (0 == (flags & MDB_RDONLY)) {
+/*	if (0 == (flags & MDB_RDONLY)) {
 		ew->currentWriteTxn = this;
 	}
-	else {
+	else {*/
 		ew->readTxns.push_back(this);
-		ew->currentReadTxn = txn;
-	}
+		ew->currentReadTxn = &txn;
+	//}
 	this->parentTw = parentTw;
 	this->flags = flags;
 	this->ew = ew;
-	this->env = ew->env;
+	this->db = ew->db;
 	info.This().As<Object>().Set("address", Number::New(info.Env(), (size_t) this));
 }
 
 TxnWrap::~TxnWrap() {
 	// Close if not closed already
-	if (this->txn) {
-		transaction_abort(txn);
+	//if (this->txn) {
+		transactional_splinterdb_abort(db, &txn);
 		this->removeFromDbWrap();
-	}
+	//}
 }
 
 void TxnWrap::removeFromDbWrap() {
@@ -113,25 +95,25 @@ void TxnWrap::removeFromDbWrap() {
 		}
 		this->ew = nullptr;
 	}
-	this->txn = nullptr;
+	//this->txn = nullptr;
 }
 
 Value TxnWrap::commit(const Napi::CallbackInfo& info) {
-	if (!this->txn) {
+	/*if (!this->txn) {
 		return throwError(info.Env(), "The transaction is already closed.");
-	}
+	}*/
 	int rc;
 	WriteWorker* writeWorker = this->ew->writeWorker;
 	if (writeWorker) {
 		// if (writeWorker->txn && env->writeMap)
 		// rc = 0
 		// else
-		rc = transaction_commit(this->txn);
+		rc = transactional_splinterdb_commit(db, &txn);
 		
 		pthread_mutex_unlock(this->ew->writingLock);
 	}
 	else
-		rc = transaction_commit(this->txn);
+		rc = transactional_splinterdb_commit(db, &txn);
 	//fprintf(stdout, "commit done\n");
 	this->removeFromDbWrap();
 
@@ -142,11 +124,8 @@ Value TxnWrap::commit(const Napi::CallbackInfo& info) {
 }
 
 Value TxnWrap::abort(const Napi::CallbackInfo& info) {
-	if (!this->txn) {
-		return throwError(info.Env(), "The transaction is already closed.");
-	}
 
-	transaction_abort(this->txn);
+	transactional_splinterdb_abort(db, &txn);
 	this->removeFromDbWrap();
 	return info.Env().Undefined();
 }
@@ -154,9 +133,6 @@ NAPI_FUNCTION(resetTxn) {
 	ARGS(1)
 	GET_INT64_ARG(0);
 	TxnWrap* tw = (TxnWrap*) i64;
-	if (!tw->txn) {
-		THROW_ERROR("The transaction is already closed.");
-	}
 	tw->reset();
 	RETURN_UNDEFINED;
 }
@@ -165,32 +141,14 @@ void resetTxnFFI(double twPointer) {
 	tw->reset();
 }
 
-void TxnWrap::reset() {
-	ew->readTxnRenewed = false;
-	transaction_reset(txn);
-}
-Value TxnWrap::renew(const Napi::CallbackInfo& info) {
-	if (!this->txn) {
-		return throwError(info.Env(), "The transaction is already closed.");
-	}
-
-	int rc = transaction_renew(this->txn);
-	if (rc != 0) {
-		return throwLmdbError(info.Env(), rc);
-	}
-	return info.Env().Undefined();
-}
 void TxnWrap::setupExports(Napi::Env env, Object exports) {
 		// TxnWrap: Prepare constructor template
 	Function TxnClass = DefineClass(env, "Txn", {
 		// TxnWrap: Add functions to the prototype
 		TxnWrap::InstanceMethod("commit", &TxnWrap::commit),
 		TxnWrap::InstanceMethod("abort", &TxnWrap::abort),
-		TxnWrap::InstanceMethod("renew", &TxnWrap::renew),
 	});
 	exports.Set("Txn", TxnClass);
-	EXPORT_NAPI_FUNCTION("resetTxn", resetTxn);
-	EXPORT_FUNCTION_ADDRESS("resetTxnPtr", resetTxnFFI);
 	//txnTpl->InstanceTemplate()->SetInternalFieldCount(1);
 }
 // This file contains code from the node-lmdb project

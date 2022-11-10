@@ -44,13 +44,9 @@ describe('lmdb-js', function() {
 	});
 	let testIteration = 0
 	describe('Basic use', basicTests({ }));
-	describe('Basic use with overlapping sync', basicTests({ compression: false, overlappingSync: true }));
-	describe('Basic use with encryption', basicTests({ compression: false, encryptionKey: 'Use this key to encrypt the data' }));
-	//describe('Check encrypted data', basicTests({ compression: false, encryptionKey: 'Use this key to encrypt the data', checkLast: true }));
-	describe('Basic use with JSON', basicTests({ encoding: 'json' }));
-	describe('Basic use with ordered-binary', basicTests({ encoding: 'ordered-binary' }));
+/*	describe('Basic use with ordered-binary', basicTests({ encoding: 'ordered-binary' }));
 	if (typeof WeakRef != 'undefined')
-		describe('Basic use with caching', basicTests({ cache: { validated: true } }));
+		describe('Basic use with caching', basicTests({ cache: { validated: true } }));*/
 	function basicTests(options) { return function() {
 		this.timeout(1000000);
 		let db, db2, db3;
@@ -60,7 +56,7 @@ describe('lmdb-js', function() {
 			db = open(options = Object.assign({
 				name: 'mydb1',
 				create: true,
-				useVersions: true,
+				useVersions: false,
 				batchStartThreshold: 10,
 				maxReaders: 100,
 				keyEncoder: orderedBinaryEncoder,
@@ -93,8 +89,9 @@ describe('lmdb-js', function() {
 			})
 			return
 		}
-		it.only('simple put', function() {
-			db.putSync('key', 'value');
+		it.only('simple put', async function() {
+			await db.put('key', 'value');
+			await db.put('key', 'value2');
 			console.log(db.get('key'));
 		});
 		it('will not open non-existent db with create disabled', function() {

@@ -91,7 +91,7 @@ Napi::Value DbWrap::open(const CallbackInfo& info) {
 	if (!keyBytesValue.IsTypedArray())
 		fprintf(stderr, "Invalid key buffer\n");
 	size_t keyBufferLength;
-	napi_get_typedarray_info(info.Env(), keyBytesValue, nullptr, &keyBufferLength, &keyBuffer, nullptr, nullptr);
+	napi_get_buffer_info(info.Env(), keyBytesValue, &keyBuffer, &keyBufferLength);
 	setFlagFromValue(&jsFlags, SEPARATE_FLUSHED, "separateFlushed", false, options);
 	String path = options.Get("path").As<String>();
 	std::string pathString = path.Utf8Value();
@@ -142,6 +142,7 @@ int DbWrap::openDB(int flags, int jsFlags, const char* path, char* keyBuffer, Co
 	this->keyBuffer = keyBuffer;
 	this->compression = compression;
 	this->jsFlags = jsFlags;
+	this->hasVersions = false;
 
 // Initialize data configuration, using default key-comparison handling.
 	data_config splinter_data_cfg;
@@ -261,6 +262,69 @@ Napi::Value DbWrap::commitTxn(const CallbackInfo& info) {
 //	TxnTracked *currentTxn = this->writeTxn;
 	transactional_splinterdb_commit(db, &txn);
 }
+transaction* DbWrap::getReadTxn(int64_t tw_address) {
+	transaction* txn;
+	if (tw_address) // explicit txn
+		txn = &((TxnWrap*)tw_address)->txn;
+	/*else if (writeTxn && (txn = writeTxn->txn)) {
+		return txn; // no need to renew write txn
+	} */else // default to current read txn
+		txn = currentReadTxn;
+	txn = new transaction;
+	int rc = transactional_splinterdb_begin(db, txn);
+	if (rc) {
+		if (!txn)
+			fprintf(stderr, "No current read transaction available");
+		if (rc != EINVAL)
+			return nullptr; // if there was a real error, signal with nullptr and let error propagate with last_error
+	}
+	return txn;
+}
+
+int32_t DbWrap::doGetByBinary(uint32_t keySize, uint32_t ifNotTxnId, int64_t txnWrapAddress) {
+	transaction* txn = getReadTxn(txnWrapAddress);
+	slice key;
+	slice data;
+	key.length = keySize;
+	key.data = (void*) keyBuffer;
+	uint32_t* currentTxnId = (uint32_t*) (keyBuffer + 32);
+	splinterdb_lookup_result result;
+	transactional_splinterdb_lookup_result_init(db, &result, 0, NULL);
+
+	int rc = transactional_splinterdb_lookup(db, txn, key, &result);
+	rc = splinterdb_lookup_result_value(&result, &data);
+	if (rc) {
+		if (rc > 0)
+			return -rc;
+		return rc;
+	}
+	rc = getVersionAndUncompress(data, this);
+	bool fits = true;
+	if (rc) {
+		fits = valToBinaryFast(data, this); // it fits in the global/compression-target buffer
+	}
+	if (fits || rc == 2 || data.length < SHARED_BUFFER_THRESHOLD) {// result = 2 if it was decompressed
+		if (data.length < 0x80000000)
+			return data.length;
+		*((uint32_t*)keyBuffer) = data.length;
+		return -30000;
+	} else {
+		return DbWrap::toSharedBuffer(db, (uint32_t*) keyBuffer, data);
+	}
+}
+
+NAPI_FUNCTION(getByBinary) {
+	ARGS(4)
+	GET_INT64_ARG(0);
+	DbWrap* dw = (DbWrap*) i64;
+	uint32_t keySize;
+	GET_UINT32_ARG(keySize, 1);
+	uint32_t ifNotTxnId;
+	GET_UINT32_ARG(ifNotTxnId, 2);
+	int64_t txnAddress = 0;
+	napi_status status = napi_get_value_int64(env, args[3], &txnAddress);
+	RETURN_INT32(dw->doGetByBinary(keySize, ifNotTxnId, txnAddress));
+}
 
 thread_local int nextSharedId = 1;
 
@@ -283,8 +347,14 @@ void DbWrap::setupExports(Napi::Env env, Object exports) {
 	Function EnvClass = ObjectWrap<DbWrap>::DefineClass(env, "Env", {
 		DbWrap::InstanceMethod("open", &DbWrap::open),
 		DbWrap::InstanceMethod("close", &DbWrap::close),
+		DbWrap::InstanceMethod("beginTxn", &DbWrap::beginTxn),
+		DbWrap::InstanceMethod("commitTxn", &DbWrap::commitTxn),
+		DbWrap::InstanceMethod("startWriting", &DbWrap::startWriting),
 	});
 	//envTpl->InstanceTemplate()->SetInternalFieldCount(1);
+	//EXPORT_NAPI_FUNCTION("compress", compress);
+	EXPORT_NAPI_FUNCTION("write", write);
+	EXPORT_NAPI_FUNCTION("getByBinary", getByBinary);
 	exports.Set("Env", EnvClass);
 }
 

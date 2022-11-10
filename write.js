@@ -148,7 +148,7 @@ export function addWriteMethods(LMDBStore, { env, fixedBuffer, resetReadTxn, use
 		if (!uint32) {
 			throw new Error('Internal buffers have been corrupted');
 		}
-		uint32[flagPosition + 1] = store.db.dbi;
+		uint32[flagPosition + 1] = 0;//store.db.dbi;
 		if (flags & 4) {
 			let keyStartPosition = (position << 3) + 12;
 			let endPosition;
@@ -367,7 +367,7 @@ export function addWriteMethods(LMDBStore, { env, fixedBuffer, resetReadTxn, use
 			switch (status) {
 				case 0:
 					if (resolvers.length > 0) {
-						let delay = Date.now() - start
+						let delay = Date.now() - start;
 						scheduleFlush(resolvers, Math.min((flushPromise && flushPromise.hasCallbacks ? delay >> 1 : delay) + 1, maxFlushDelay))
 					}
 				case 1:

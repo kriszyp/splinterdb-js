@@ -5,10 +5,11 @@ const ITERATOR_DONE = { done: true, value: undefined };
 const Uint8ArraySlice = Uint8Array.prototype.slice;
 const Uint8A = typeof Buffer != 'undefined' ? Buffer.allocUnsafeSlow : Uint8Array
 let getValueBytes = globalBuffer;
-/*if (!getValueBytes.maxLength) {
-	 getValueBytes.maxLength = getValueBytes.length;
-	 Object.defineProperty(getValueBytes, 'length', { value: getValueBytes.length, writable: true, configurable: true });
-}*/
+if (!getValueBytes.maxLength) {
+	getValueBytes.maxLength = getValueBytes.length;
+	getValueBytes.isGlobal = true;
+	Object.defineProperty(getValueBytes, 'length', { value: getValueBytes.length, writable: true, configurable: true });
+}
 const START_ADDRESS_POSITION = 4064;
 const NEW_BUFFER_THRESHOLD = 0x8000;
 export const UNMODIFIED = {};
@@ -37,10 +38,10 @@ export function addReadMethods(LMDBStore, {
 		getBinaryFast(id, options) {
 			let rc;
 			if (options?.txn?.address)
-				rc = this.lastSize = getByBinary(this.dbAddress, this.writeKey(id, keyBytes, 0), options.ifNotTxnId || 0, options.txn.address);
+				rc = this.lastSize = getByBinary(env.address, this.writeKey(id, keyBytes, 0), options.ifNotTxnId || 0, options.txn.address);
 			else {
 				(env.writeTxn || (readTxnRenewed ? readTxn : renewReadTxn(this)));
-				rc = this.lastSize = getByBinary(this.dbAddress, this.writeKey(id, keyBytes, 0), options?.ifNotTxnId || 0, 0);
+				rc = this.lastSize = getByBinary(env.address, this.writeKey(id, keyBytes, 0), options?.ifNotTxnId || 0, 0);
 			}
 			if (rc < 0) {
 				if (rc == -30798) // MDB_NOTFOUND
