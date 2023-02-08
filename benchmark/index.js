@@ -2,8 +2,8 @@
 import { Worker, isMainThread, parentPort, threadId } from'worker_threads';
 import { isMaster, fork } from 'cluster';
 import inspector from 'inspector'
-//inspector.open(9229, null, true); debugger
-var testDirPath = new URL('./benchdata', import.meta.url).toString().slice(8);
+inspector.open(9229, null, true); debugger
+var testDirPath = new URL('./benchdata.spdb', import.meta.url).toString().slice(7);
 import fs from 'fs';
 import rimraf from 'rimraf';
 import benchmark from 'benchmark';
@@ -15,7 +15,7 @@ let { noop } = nativeAddon;
 var env;
 var dbi;
 var keys = [];
-var total = 100;
+var total = 10000;
 var store
 let data = {
   name: 'test',
@@ -33,8 +33,8 @@ let bigString = 'big'
 for (let i = 0; i < 14; i++) {
   bigString += bigString
 }
-data.more = bigString
-console.log(bigString.length)
+//data.more = bigString
+//console.log(bigString.length)
 var c = 0
 let result
 
@@ -45,8 +45,12 @@ function setData(deferred) {
     for (let j = 0;j<100; j++)
       store.put((c += 357) % total, data)
   })*/
-  let key = (c += 357) % total
-  result = store.put(key, data)
+  store.transactionSync(() => {
+    for (let i = 0; i < 10; i++) {
+      let key = (c += 357) % total
+      result = store.put(key, data)
+    }
+  });
   /*if (key % 2 == 0)
     result = store.put(key, data)
   else
@@ -148,13 +152,13 @@ function cleanup(done) {
       return done(err);
     }
     // setup clean directory
-    fs.mkdirSync(testDirPath, { recursive: true });
+    //fs.mkdirSync(testDirPath, { recursive: true });
     done();
   });
 }
 function setup() {
   console.log('opening', testDirPath)
-  let rootStore = open(testDirPath, {
+  store = open(testDirPath, {
     //noMemInit: true,
     //pageSize: 0x4000,
     //compression: true,
@@ -162,20 +166,26 @@ function setup() {
     //winMemoryPriority: 4,
     //eventTurnBatching: false,
     //overlappingSync: true,
-  })
+    name: 'mydb1',
+    create: true,
+    useVersions: false,
+//    sharedStructuresKey: 100000000,
+    keyIsUint32: true,
+  })/*
   store = rootStore.openDB('testing', {
     //create: true,
     sharedStructuresKey: 100000000,
     keyIsUint32: true,
     //compression: true,
-  })
+  })*/
   let lastPromise
-  for (let i = 0; i < total; i++) {
+  /*for (let i = 0; i < total; i++) {
     lastPromise = store.put(i, data)
+    console.log('write',i)
   }
   return lastPromise?.then(() => {
     console.log('setup completed');
-  })
+  })*/
 }
 var txn;
 
@@ -250,7 +260,7 @@ cleanup(async function (err) {
 
   // other threads
     suite.add('put', {
-      defer: true,
+      //defer: true,
       fn: setData
     });
     suite.add('get', getData);

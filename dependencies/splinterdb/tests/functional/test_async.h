@@ -7,8 +7,7 @@
  *     This file contains interfaces for a toy per-thread ctxt manager.
  */
 
-#ifndef __TEST_ASYNC_H_
-#define __TEST_ASYNC_H_
+#pragma once
 
 #include "platform.h"
 
@@ -27,7 +26,7 @@ typedef struct {
       int8   refcount;   // Used by functionality test
       uint64 lookup_num; // Used by rest
    };
-   char              key[MAX_KEY_SIZE];
+   key_buffer        key;
    merge_accumulator data;
 } test_async_ctxt;
 
@@ -69,5 +68,3 @@ async_ctxt_process_ready(trunk_handle         *spl,
                          timestamp            *latency_max,
                          async_ctxt_process_cb process_cb,
                          void                 *process_arg);
-
-#endif // __TEST_ASYNC_H_

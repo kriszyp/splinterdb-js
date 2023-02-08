@@ -7,8 +7,7 @@
  *    Merging functionality, notably merge iterators.
  */
 
-#ifndef __MERGE_H
-#define __MERGE_H
+#pragma once
 
 #include "data_internal.h"
 #include "iterator.h"
@@ -20,8 +19,8 @@
 typedef struct ordered_iterator {
    iterator *itor;
    int       seq;
-   slice     key;
-   message   data;
+   key       curr_key;
+   message   curr_data;
    bool      next_key_equal;
 } ordered_iterator;
 
@@ -66,8 +65,8 @@ typedef struct merge_iterator {
    bool         at_end;
    int          num_remaining; // number of ritors not at end
    data_config *cfg;           // point message tree data config
-   slice        key;           // next key
-   message      data;          // next data
+   key          curr_key;      // current key
+   message      curr_data;     // current data
 
    // Padding so ordered_iterators[-1] is valid
    ordered_iterator ordered_iterator_stored_pad;
@@ -105,5 +104,3 @@ merge_iterator_destroy(platform_heap_id hid, merge_iterator **merge_itor);
 
 void
 merge_iterator_print(merge_iterator *merge_itor);
-
-#endif // __BTREE_MERGE_H

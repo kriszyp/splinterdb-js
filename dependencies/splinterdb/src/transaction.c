@@ -1,9 +1,12 @@
 #include "splinterdb/transaction.h"
-#include "transaction_private.h"
-#include "splinterdb_private.h"
+#include "platform.h"
+#include "tictoc_data.h"
+#include "transaction_internal.h"
+#include "splinterdb_internal.h"
 #include "platform_linux/platform.h"
 #include "data_internal.h"
 #include "poison.h"
+#include "util.h"
 #include <stdlib.h>
 
 tictoc_timestamp_set ZERO_TICTOC_TIMESTAMP_SET = {.rts = 0, .wts = 0};
@@ -39,13 +42,11 @@ is_serializable(tictoc_transaction *tt_txn)
    return (tt_txn->isol_level == TRANSACTION_ISOLATION_LEVEL_SERIALIZABLE);
 }
 
-/* Uncomment if necessary
 static inline bool
 is_snapshot_isolation(tictoc_transaction *tt_txn)
 {
    return (tt_txn->isol_level == TRANSACTION_ISOLATION_LEVEL_SNAPSHOT);
 }
-*/
 
 static inline bool
 is_repeatable_read(tictoc_transaction *tt_txn)
@@ -60,10 +61,44 @@ is_repeatable_read(tictoc_transaction *tt_txn)
 static int
 tictoc_read(transactional_splinterdb *txn_kvsb,
             tictoc_transaction       *tt_txn,
-            slice                     key,
+            slice                     user_key,
             splinterdb_lookup_result *result)
 {
-   int rc = splinterdb_lookup(txn_kvsb->kvsb, key, result);
+   key ukey = key_create_from_slice(user_key);
+   for (uint64 i = 0; i < tt_txn->write_cnt; ++i) {
+      tictoc_rw_entry *w = tictoc_get_write_set_entry(tt_txn, i);
+      platform_assert(!tictoc_rw_entry_is_invalid(w));
+
+      if (data_key_compare(
+             txn_kvsb->tcfg->kvsb_cfg.data_cfg,
+             ukey,
+             key_create_from_slice(writable_buffer_to_slice(&w->key)))
+          == 0)
+      {
+         tictoc_tuple_header *tuple = writable_buffer_data(&w->tuple);
+         uint64               app_value_size =
+            writable_buffer_length(&w->tuple) - sizeof(tictoc_tuple_header);
+         _splinterdb_lookup_result *_result =
+            (_splinterdb_lookup_result *)result;
+         merge_accumulator_resize(&_result->value, app_value_size);
+         memcpy(merge_accumulator_data(&_result->value),
+                tuple->value,
+                app_value_size);
+
+         tictoc_rw_entry *r = tictoc_get_new_read_set_entry(tt_txn);
+         platform_assert(!tictoc_rw_entry_is_invalid(r));
+         writable_buffer_init_from_slice(
+            &r->tuple, 0, writable_buffer_to_slice(&w->tuple));
+         tictoc_rw_entry_set_point_key(
+            r, user_key, txn_kvsb->tcfg->kvsb_cfg.data_cfg);
+         tuple = writable_buffer_data(&r->tuple);
+         get_ts_from_splinterdb(txn_kvsb->kvsb, user_key, &tuple->ts_set);
+
+         return 0;
+      }
+   }
+
+   int rc = splinterdb_lookup(txn_kvsb->kvsb, user_key, result);
 
    if (splinterdb_lookup_found(result)) {
       tictoc_rw_entry *r = tictoc_get_new_read_set_entry(tt_txn);
@@ -71,10 +106,9 @@ tictoc_read(transactional_splinterdb *txn_kvsb,
 
       slice value;
       splinterdb_lookup_result_value(result, &value);
-      writable_buffer_init_from_slice(&r->tuple,
-                                      0,
-                                      value); // FIXME: use a correct heap_id
-      tictoc_rw_entry_set_point_key(r, key, txn_kvsb->tcfg->kvsb_cfg.data_cfg);
+      writable_buffer_init_from_slice(&r->tuple, 0, value);
+      tictoc_rw_entry_set_point_key(
+         r, user_key, txn_kvsb->tcfg->kvsb_cfg.data_cfg);
 
       tictoc_tuple_header       *tuple   = writable_buffer_data(&r->tuple);
       _splinterdb_lookup_result *_result = (_splinterdb_lookup_result *)result;
@@ -91,6 +125,7 @@ tictoc_read(transactional_splinterdb *txn_kvsb,
 /*
  * Algorithm 2: Validation Phase
  */
+/*
 static bool
 tictoc_validation(transactional_splinterdb *txn_kvsb,
                   tictoc_transaction       *tt_txn)
@@ -128,7 +163,7 @@ tictoc_validation(transactional_splinterdb *txn_kvsb,
 
       bool is_read_entry_invalid = read_entry_ts.rts < tt_txn->commit_rts;
       if (is_read_entry_invalid) {
-         platform_mutex_lock(&txn_kvsb->g_lock);
+         hash_lock_acquire(&txn_kvsb->hash_lock, rkey);
 
          tictoc_timestamp_set tuple_ts;
          get_ts_from_splinterdb(txn_kvsb->kvsb, rkey, &tuple_ts);
@@ -139,14 +174,16 @@ tictoc_validation(transactional_splinterdb *txn_kvsb,
             tuple_ts.rts <= tt_txn->commit_rts
             && lock_table_is_entry_locked(txn_kvsb->lock_tbl, r)
             && tictoc_rw_entry_is_not_in_write_set(
-               tt_txn,
-               r,
-               txn_kvsb->tcfg->txn_data_cfg->application_data_config);
+               tt_txn, r, txn_kvsb->tcfg->kvsb_cfg.data_cfg);
 
          bool need_to_abort =
             is_read_entry_written_by_another || is_read_entry_locked_by_another;
          if (need_to_abort) {
-            platform_mutex_unlock(&txn_kvsb->g_lock);
+           if (is_read_entry_locked_by_another) {
+             platform_error_log("tuple_ts.rts: %u, tuple_ts.wts: %u, commit_ts:
+%lu\n", tuple_ts.rts, tuple_ts.wts, tt_txn->commit_rts);
+           }
+            hash_lock_release(&txn_kvsb->hash_lock, rkey);
             return FALSE;
          }
 
@@ -161,13 +198,13 @@ tictoc_validation(transactional_splinterdb *txn_kvsb,
                txn_kvsb->kvsb, rkey, writable_buffer_to_slice(&ts));
             writable_buffer_deinit(&ts);
          }
-
-         platform_mutex_unlock(&txn_kvsb->g_lock);
+         hash_lock_release(&txn_kvsb->hash_lock, rkey);
       }
    }
 
    return TRUE;
 }
+*/
 
 /*
  * Algorithm 3: Write Phase
@@ -194,7 +231,6 @@ tictoc_write(transactional_splinterdb *txn_kvsb, tictoc_transaction *tt_txn)
 
       int rc = 0;
 
-      // TODO: merge messages in the write set and write to splinterdb
       switch (w->op) {
          case MESSAGE_TYPE_INSERT:
             rc = splinterdb_insert(
@@ -221,17 +257,18 @@ static int
 tictoc_local_write(transactional_splinterdb *txn_kvsb,
                    tictoc_transaction       *txn,
                    tictoc_timestamp_set      ts_set,
-                   slice                     key,
+                   slice                     user_key,
                    message                   msg)
 {
    const data_config *cfg =
       txn_kvsb->tcfg->txn_data_cfg->application_data_config;
 
+   key ukey = key_create_from_slice(user_key);
    // TODO: this part can be done by binary search if the write_set is sorted
    for (uint64 i = 0; i < txn->write_cnt; ++i) {
-      tictoc_rw_entry *w    = tictoc_get_write_set_entry(txn, i);
-      slice            wkey = writable_buffer_to_slice(&w->key);
-      if (data_key_compare(cfg, wkey, key) == 0) {
+      tictoc_rw_entry *w = tictoc_get_write_set_entry(txn, i);
+      key wkey = key_create_from_slice(writable_buffer_to_slice(&w->key));
+      if (data_key_compare(cfg, wkey, ukey) == 0) {
          if (message_is_definitive(msg)) {
             w->op = message_class(msg);
 
@@ -255,7 +292,7 @@ tictoc_local_write(transactional_splinterdb *txn_kvsb,
                                            tuple->value);
             message old_message = message_create(w->op, old_value);
 
-            data_merge_tuples(cfg, key, old_message, &new_message);
+            data_merge_tuples(cfg, ukey, old_message, &new_message);
 
             writable_buffer_resize(&w->tuple,
                                    sizeof(tictoc_timestamp_set)
@@ -279,7 +316,8 @@ tictoc_local_write(transactional_splinterdb *txn_kvsb,
    platform_assert(!tictoc_rw_entry_is_invalid(w));
 
    w->op = message_class(msg);
-   tictoc_rw_entry_set_point_key(w, key, txn_kvsb->tcfg->kvsb_cfg.data_cfg);
+   tictoc_rw_entry_set_point_key(
+      w, user_key, txn_kvsb->tcfg->kvsb_cfg.data_cfg);
 
    slice value = message_slice(msg);
 
@@ -327,9 +365,7 @@ transactional_splinterdb_create_or_open(const splinterdb_config   *kvsb_cfg,
       return rc;
    }
 
-   _txn_kvsb->lock_tbl = lock_table_create(kvsb_cfg->data_cfg);
-
-   platform_mutex_init(&_txn_kvsb->g_lock, 0, 0);
+   _txn_kvsb->lock_tbl = lock_table_create();
 
    *txn_kvsb = _txn_kvsb;
 
@@ -356,8 +392,6 @@ transactional_splinterdb_close(transactional_splinterdb **txn_kvsb)
 {
    transactional_splinterdb *_txn_kvsb = *txn_kvsb;
    splinterdb_close(&_txn_kvsb->kvsb);
-
-   platform_mutex_destroy(&_txn_kvsb->g_lock);
 
    lock_table_destroy(_txn_kvsb->lock_tbl);
 
@@ -394,27 +428,107 @@ transactional_splinterdb_commit(transactional_splinterdb *txn_kvsb,
 {
    tictoc_transaction *tt_txn = &txn->tictoc;
 
-   bool write_successfully = FALSE;
+   tt_txn->commit_wts = 0;
+   tt_txn->commit_rts = 0;
 
-   // Step 1: Lock Write Set
-   tictoc_transaction_sort_write_set(
-      tt_txn, txn_kvsb->tcfg->txn_data_cfg->application_data_config);
+   for (uint64 i = 0; i < tt_txn->read_cnt; ++i) {
+      tictoc_rw_entry     *r        = tictoc_get_read_set_entry(tt_txn, i);
+      tictoc_timestamp_set entry_ts = get_ts_from_tictoc_rw_entry(r);
+      tt_txn->commit_rts            = MAX(tt_txn->commit_rts, entry_ts.wts);
+   }
+
+   // This part is needed for the pre-abort optimization But, because
+   // we don't read timestamps for writes during the execution, we
+   // cannot apply this optimization for now. If timestamps are in
+   // memory, this optimization is possible.
+   /*
+   for (uint64 i = 0; i < tt_txn->write_cnt; ++i) {
+      tictoc_rw_entry     *w = tictoc_get_write_set_entry(tt_txn, i);
+      tictoc_timestamp_set entry_ts = get_ts_from_tictoc_rw_entry(w);
+      tt_txn->commit_wts = MAX(tt_txn->commit_wts, entry_ts.rts + 1);
+   }
+   */
+
+   if (is_serializable(tt_txn) || is_repeatable_read(tt_txn)) {
+      tt_txn->commit_rts = tt_txn->commit_wts =
+         MAX(tt_txn->commit_rts, tt_txn->commit_wts);
+   }
+
+   tictoc_transaction_sort_write_set(tt_txn, txn_kvsb->tcfg->kvsb_cfg.data_cfg);
 
    while (tictoc_transaction_lock_all_write_set(tt_txn, txn_kvsb->lock_tbl)
           == FALSE)
    {
-      platform_sleep(1000); // 1us is the value that is mentioned in the paper
+      platform_sleep_ns(
+         1000); // 1us is the value that is mentioned in the paper
    }
 
-   if (tictoc_validation(txn_kvsb, &txn->tictoc)) {
+   for (uint64 i = 0; i < tt_txn->write_cnt; ++i) {
+      tictoc_rw_entry     *w = tictoc_get_write_set_entry(tt_txn, i);
+      tictoc_timestamp_set tuple_ts;
+      get_ts_from_splinterdb(
+         txn_kvsb->kvsb, writable_buffer_to_slice(&w->key), &tuple_ts);
+      tt_txn->commit_wts = MAX(tt_txn->commit_wts, tuple_ts.rts + 1);
+   }
+
+   uint64 commit_ts =
+      is_snapshot_isolation(tt_txn) ? tt_txn->commit_rts : tt_txn->commit_wts;
+
+   bool is_aborted = FALSE;
+   for (uint64 i = 0; i < tt_txn->read_cnt; ++i) {
+      tictoc_rw_entry     *r             = tictoc_get_read_set_entry(tt_txn, i);
+      slice                rkey          = writable_buffer_to_slice(&r->key);
+      tictoc_timestamp_set read_entry_ts = get_ts_from_tictoc_rw_entry(r);
+
+      bool is_read_entry_invalid = read_entry_ts.rts < commit_ts;
+      if (is_read_entry_invalid) {
+         tictoc_timestamp_set tuple_ts;
+         get_ts_from_splinterdb(txn_kvsb->kvsb, rkey, &tuple_ts);
+
+         if (tuple_ts.wts != read_entry_ts.wts) {
+            is_aborted = TRUE;
+            break;
+         }
+
+         lock_table_rc rc =
+            lock_table_try_acquire_entry_lock(txn_kvsb->lock_tbl, r);
+         if (rc == LOCK_TABLE_RC_BUSY) {
+            is_aborted = TRUE;
+            break;
+         }
+
+         if (rc != LOCK_TABLE_RC_DEADLK) {
+            get_ts_from_splinterdb(txn_kvsb->kvsb, rkey, &tuple_ts);
+         }
+
+         if (tuple_ts.wts != read_entry_ts.wts) {
+            lock_table_release_entry_lock(txn_kvsb->lock_tbl, r);
+            is_aborted = TRUE;
+            break;
+         }
+
+         uint32 new_rts = MAX(commit_ts, tuple_ts.rts);
+         if (new_rts > tuple_ts.rts) {
+            writable_buffer ts;
+            writable_buffer_init(&ts, 0);
+            writable_buffer_append(&ts, sizeof(tictoc_timestamp), &new_rts);
+            splinterdb_update(
+               txn_kvsb->kvsb, rkey, writable_buffer_to_slice(&ts));
+            writable_buffer_deinit(&ts);
+         }
+
+         lock_table_release_entry_lock(txn_kvsb->lock_tbl, r);
+      }
+   }
+
+   if (!is_aborted) {
       tictoc_write(txn_kvsb, &txn->tictoc);
-      write_successfully = TRUE;
    }
 
    tictoc_transaction_unlock_all_write_set(tt_txn, txn_kvsb->lock_tbl);
    tictoc_transaction_deinit(tt_txn, txn_kvsb->lock_tbl);
 
-   return write_successfully ? 0 : -1;
+   return (-1 * is_aborted);
 }
 
 int
@@ -429,45 +543,48 @@ transactional_splinterdb_abort(transactional_splinterdb *txn_kvsb,
 int
 transactional_splinterdb_insert(transactional_splinterdb *txn_kvsb,
                                 transaction              *txn,
-                                slice                     key,
+                                slice                     user_key,
                                 slice                     value)
 {
    return tictoc_local_write(txn_kvsb,
                              &txn->tictoc,
                              ZERO_TICTOC_TIMESTAMP_SET,
-                             key,
+                             user_key,
                              message_create(MESSAGE_TYPE_INSERT, value));
 }
 
 int
 transactional_splinterdb_delete(transactional_splinterdb *txn_kvsb,
                                 transaction              *txn,
-                                slice                     key)
+                                slice                     user_key)
 {
-   return tictoc_local_write(
-      txn_kvsb, &txn->tictoc, ZERO_TICTOC_TIMESTAMP_SET, key, DELETE_MESSAGE);
+   return tictoc_local_write(txn_kvsb,
+                             &txn->tictoc,
+                             ZERO_TICTOC_TIMESTAMP_SET,
+                             user_key,
+                             DELETE_MESSAGE);
 }
 
 int
 transactional_splinterdb_update(transactional_splinterdb *txn_kvsb,
                                 transaction              *txn,
-                                slice                     key,
+                                slice                     user_key,
                                 slice                     delta)
 {
    return tictoc_local_write(txn_kvsb,
                              &txn->tictoc,
                              ZERO_TICTOC_TIMESTAMP_SET,
-                             key,
+                             user_key,
                              message_create(MESSAGE_TYPE_UPDATE, delta));
 }
 
 int
 transactional_splinterdb_lookup(transactional_splinterdb *txn_kvsb,
                                 transaction              *txn,
-                                slice                     key,
+                                slice                     user_key,
                                 splinterdb_lookup_result *result)
 {
-   return tictoc_read(txn_kvsb, &txn->tictoc, key, result);
+   return tictoc_read(txn_kvsb, &txn->tictoc, user_key, result);
 }
 
 void
@@ -480,12 +597,6 @@ transactional_splinterdb_lookup_result_init(
 {
    return splinterdb_lookup_result_init(
       txn_kvsb->kvsb, result, buffer_len, buffer);
-}
-
-uint64
-transactional_splinterdb_key_size(transactional_splinterdb *txn_kvsb)
-{
-   return txn_kvsb->tcfg->kvsb_cfg.data_cfg->key_size;
 }
 
 void

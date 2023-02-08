@@ -14,8 +14,7 @@
  *     operations can be restricted to given key ranges.
  */
 
-#ifndef __MINI_ALLOCATOR_H
-#define __MINI_ALLOCATOR_H
+#pragma once
 
 #include "platform.h"
 #include "allocator.h"
@@ -60,7 +59,7 @@ mini_init(mini_allocator *mini,
           page_type       type,
           bool            keyed);
 void
-mini_release(mini_allocator *mini, const slice key);
+mini_release(mini_allocator *mini, key end_key);
 
 /*
  * NOTE: Can only be called on a mini_allocator which has made no allocations.
@@ -71,7 +70,7 @@ mini_destroy_unused(mini_allocator *mini);
 uint64
 mini_alloc(mini_allocator *mini,
            uint64          batch,
-           const slice     key,
+           key             alloc_key,
            uint64         *next_extent);
 
 
@@ -85,15 +84,15 @@ mini_keyed_inc_ref(cache       *cc,
                    data_config *data_cfg,
                    page_type    type,
                    uint64       meta_head,
-                   const slice  start_key,
-                   const slice  end_key);
+                   key          start_key,
+                   key          end_key);
 bool
 mini_keyed_dec_ref(cache       *cc,
                    data_config *data_cfg,
                    page_type    type,
                    uint64       meta_head,
-                   const slice  start_key,
-                   const slice  end_key);
+                   key          start_key,
+                   key          end_key);
 
 void
 mini_block_dec_ref(cache *cc, uint64 meta_head);
@@ -106,8 +105,8 @@ mini_keyed_extent_count(cache       *cc,
                         data_config *data_cfg,
                         page_type    type,
                         uint64       meta_head,
-                        const slice  start_key,
-                        const slice  end_key);
+                        key          start_key,
+                        key          end_key);
 void
 mini_unkeyed_prefetch(cache *cc, page_type type, uint64 meta_head);
 
@@ -130,5 +129,3 @@ mini_num_extents(mini_allocator *mini)
 {
    return mini->num_extents;
 }
-
-#endif // __MINI_ALLOCATOR_H

@@ -154,7 +154,7 @@ void writeValueToEntry(const Value &str, slice *val);
 LmdbKeyType keyTypeFromOptions(const Value &val, LmdbKeyType defaultKeyType = LmdbKeyType::DefaultKey);
 int getVersionAndUncompress(slice &data, DbWrap* ew);
 int compareFast(const slice *a, const slice *b);
-Value setGlobalBuffer(const CallbackInfo& info);
+napi_value setGlobalBuffer(napi_env env, napi_callback_info info);
 Value lmdbError(const CallbackInfo& info);
 napi_value createBufferForAddress(napi_env env, napi_callback_info info);
 napi_value getViewAddress(napi_env env, napi_callback_info info);
@@ -475,7 +475,7 @@ public:
 
 		Parameters:
 
-		* Transaction object
+		* Resource object
 		* Database instance object
 	*/
 	Napi::Value close(const CallbackInfo& info);

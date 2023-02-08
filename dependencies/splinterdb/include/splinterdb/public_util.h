@@ -1,14 +1,20 @@
 // Copyright 2018-2021 VMware, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef __PUBLIC_UTIL_H__
-#define __PUBLIC_UTIL_H__
+#pragma once
 
 #include "splinterdb/public_platform.h"
 
 /*
- * Non-disk resident descriptor for a [<length>, <value ptr>] pair
- * Used to pass-around references to keys and values of different lengths.
+ * A slice is just a const pointer with a length.  Slices do not
+ * manage the memory to which they point, i.e. slices do not allocate,
+ * free, realloc, or do anything else to the underlying memory
+ * allocation.
+ *
+ * The best way to think of slices is: they're just const pointers.
+ *
+ * Slices are not disk resident.  They are used to pass-around
+ * references to keys, values, etc, of different lengths in memory.
  *
  * Avoid accessing these fields directly.
  * Instead, use the slice_length and slice_data accessor functions.
@@ -18,7 +24,8 @@ typedef struct slice {
    const void *data;
 } slice;
 
-extern const slice NULL_SLICE;
+#define NULL_SLICE    ((slice){.length = 0, .data = NULL})
+#define INVALID_SLICE ((slice){.length = (uint64)-1, .data = NULL})
 
 static inline bool
 slice_is_null(const slice b)
@@ -43,5 +50,3 @@ slice_data(const slice b)
 {
    return b.data;
 }
-
-#endif /* __PUBLIC_UTIL_H__ */

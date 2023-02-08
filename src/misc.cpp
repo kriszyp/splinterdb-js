@@ -20,7 +20,7 @@ void setupExportMisc(Napi::Env env, Object exports) {
 	#endif
 
 	exports.Set("version", versionObj);
-	exports.Set("setGlobalBuffer", Function::New(env, setGlobalBuffer));
+	EXPORT_NAPI_FUNCTION("setGlobalBuffer", setGlobalBuffer);
 	exports.Set("lmdbError", Function::New(env, lmdbError));
 	//exports.Set("enableDirectV8", Function::New(env, enableDirectV8));
 	EXPORT_NAPI_FUNCTION("createBufferForAddress", createBufferForAddress);
@@ -119,9 +119,10 @@ Value lmdbError(const CallbackInfo& info) {
 	return throwLmdbError(info.Env(), info[0].As<Number>().Int32Value());
 }
 
-Value setGlobalBuffer(const CallbackInfo& info) {
-	napi_get_buffer_info(info.Env(), info[0], (void**) &globalUnsafePtr, &globalUnsafeSize);
-	return info.Env().Undefined();
+NAPI_FUNCTION(setGlobalBuffer) {
+	ARGS(1)
+	napi_get_buffer_info(env, args[0], (void**) &globalUnsafePtr, &globalUnsafeSize);
+	RETURN_UNDEFINED;
 }
 
 /*Value getBufferForAddress) {

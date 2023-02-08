@@ -36,11 +36,22 @@
 
 /*
  *------------------------------------------------------------------------------
- * Function declarations
+ * Function declarations and virtual trampolines
  *------------------------------------------------------------------------------
  */
 
 // allocator.h functions
+
+allocator_config *
+rc_allocator_get_config(rc_allocator *al);
+
+allocator_config *
+rc_allocator_get_config_virtual(allocator *a)
+{
+   rc_allocator *al = (rc_allocator *)a;
+   return rc_allocator_get_config(al);
+}
+
 platform_status
 rc_allocator_alloc(rc_allocator *al, uint64 *addr, page_type type);
 
@@ -170,6 +181,7 @@ rc_allocator_print_allocated_virtual(allocator *a)
 }
 
 const static allocator_ops rc_allocator_ops = {
+   .get_config        = rc_allocator_get_config_virtual,
    .alloc             = rc_allocator_alloc_virtual,
    .inc_ref           = rc_allocator_inc_ref_virtual,
    .dec_ref           = rc_allocator_dec_ref_virtual,
@@ -177,6 +189,7 @@ const static allocator_ops rc_allocator_ops = {
    .get_super_addr    = rc_allocator_get_super_addr_virtual,
    .alloc_super_addr  = rc_allocator_alloc_super_addr_virtual,
    .remove_super_addr = rc_allocator_remove_super_addr_virtual,
+   .in_use            = rc_allocator_in_use_virtual,
    .get_capacity      = rc_allocator_get_capacity_virtual,
    .assert_noleaks    = rc_allocator_assert_noleaks_virtual,
    .print_stats       = rc_allocator_print_stats_virtual,
@@ -190,7 +203,7 @@ const static allocator_ops rc_allocator_ops = {
  * Is page address 'base_addr' a valid extent address? I.e. it is the address
  * of the 1st page in an extent.
  */
-__attribute__((unused)) static inline bool
+debug_only static inline bool
 rc_allocator_valid_extent_addr(rc_allocator *al, uint64 base_addr)
 {
    return ((base_addr % al->cfg->io_cfg->extent_size) == 0);
@@ -243,34 +256,17 @@ rc_allocator_init_meta_page(rc_allocator *al)
 }
 
 /*
- *-----------------------------------------------------------------------------
- * rc_allocator_config_init --
- *
- *      Initialize rc_allocator config values
- *-----------------------------------------------------------------------------
- */
-void
-rc_allocator_config_init(rc_allocator_config *allocator_cfg,
-                         io_config           *io_cfg,
-                         uint64               capacity)
-{
-   ZERO_CONTENTS(allocator_cfg);
-
-   allocator_cfg->io_cfg          = io_cfg;
-   allocator_cfg->capacity        = capacity;
-   allocator_cfg->page_capacity   = capacity / io_cfg->page_size;
-   allocator_cfg->extent_capacity = capacity / io_cfg->extent_size;
-}
-
-/*
  *----------------------------------------------------------------------
  * rc_allocator_valid_config() --
  *
  * Do minimal validation of RC-allocator cofiguration.
+ *
+ * TODO(robj): Now that config is in generic allocator.h, this validator
+ * should probably move into allocator.c.
  *----------------------------------------------------------------------
  */
 platform_status
-rc_allocator_valid_config(rc_allocator_config *cfg)
+rc_allocator_valid_config(allocator_config *cfg)
 {
    platform_status rc = STATUS_OK;
    rc                 = laio_config_valid(cfg->io_cfg);
@@ -323,7 +319,7 @@ rc_allocator_valid_config(rc_allocator_config *cfg)
  */
 platform_status
 rc_allocator_init(rc_allocator        *al,
-                  rc_allocator_config *cfg,
+                  allocator_config    *cfg,
                   io_handle           *io,
                   platform_heap_handle hh,
                   platform_heap_id     hid,
@@ -408,7 +404,7 @@ rc_allocator_deinit(rc_allocator *al)
  */
 platform_status
 rc_allocator_mount(rc_allocator        *al,
-                   rc_allocator_config *cfg,
+                   allocator_config    *cfg,
                    io_handle           *io,
                    platform_heap_handle hh,
                    platform_heap_id     hid,
@@ -467,15 +463,12 @@ rc_allocator_mount(rc_allocator        *al,
       ROUNDUP(al->cfg->extent_capacity, al->cfg->io_cfg->page_size);
    status = io_read(io, al->ref_count, io_size, cfg->io_cfg->extent_size);
    platform_assert_status_ok(status);
+
    for (uint64 i = 0; i < al->cfg->extent_capacity; i++) {
       if (al->ref_count[i] != 0) {
          al->stats.curr_allocated++;
       }
    }
-   platform_default_log(
-      "Allocated %lu extents at mount: (%lu MiB)\n",
-      al->stats.curr_allocated,
-      B_TO_MiB(al->stats.curr_allocated * cfg->io_cfg->extent_size));
    return STATUS_OK;
 }
 
@@ -484,10 +477,6 @@ void
 rc_allocator_unmount(rc_allocator *al)
 {
    platform_status status;
-
-   platform_default_log(
-      "Allocated at unmount: %lu MiB\n",
-      B_TO_MiB(al->stats.curr_allocated * al->cfg->io_cfg->extent_size));
 
    // persist the ref counts upon unmount.
    uint32 io_size =
@@ -670,6 +659,19 @@ uint64
 rc_allocator_page_size(rc_allocator *al)
 {
    return al->cfg->io_cfg->page_size;
+}
+
+/*
+ *----------------------------------------------------------------------
+ * rc_allocator_get_config--
+ *
+ *      Retrieve the allocator configuration.
+ *----------------------------------------------------------------------
+ */
+allocator_config *
+rc_allocator_get_config(rc_allocator *al)
+{
+   return al->cfg;
 }
 
 /*

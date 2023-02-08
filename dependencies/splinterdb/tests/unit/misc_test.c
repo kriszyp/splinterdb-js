@@ -56,9 +56,25 @@ test_vfprintf_usermsg(platform_log_handle *log_handle,
 /*
  * Global data declaration macro:
  */
-CTEST_DATA(misc){};
+CTEST_DATA(misc)
+{
+   FILE *log_output;
+};
 
-CTEST_SETUP(misc) {}
+CTEST_SETUP(misc)
+{
+   // It can be surprising to see errors printed from a successful test run.
+   // So lets send those messages to /dev/null unless VERBOSE=1.
+   if (Ctest_verbose) {
+      data->log_output = stdout;
+      CTEST_LOG_INFO("\nVerbose mode on.  This test exercises error-reporting "
+                     "logic, so on success it will print a message "
+                     "that appears to be an error.\n");
+   } else {
+      data->log_output = fopen("/dev/null", "w");
+      ASSERT_NOT_NULL(data->log_output);
+   }
+}
 
 // Optional teardown function for suite, called after every test in suite
 CTEST_TEARDOWN(misc) {}
@@ -76,6 +92,9 @@ CTEST2(misc, test_assert_basic_msg)
    test_platform_assert(log_handle, 1 == 2, MISC_MSG_WITH_NO_ARGS);
    char *assert_str = platform_log_stream_to_string(&stream);
 
+   // Skip other pid/tid details prepended to the message
+   assert_str = strstr(assert_str, "Assertion");
+
    // Construct an expected assertion message, using parts we know about.
    char expmsg[ASSERT_OUTBUF_LEN];
    snprintf(expmsg,
@@ -87,7 +106,7 @@ CTEST2(misc, test_assert_basic_msg)
             MISC_MSG_WITH_NO_ARGS);
 
    ASSERT_STREQN(expmsg, assert_str, strlen(expmsg));
-   platform_close_log_stream(&stream, Platform_error_log_handle);
+   platform_close_log_stream(&stream, data->log_output);
 }
 
 /*
@@ -106,7 +125,11 @@ CTEST2(misc, test_assert_msg_with_args)
    // clang-format off
    test_platform_assert(log_handle, 1 == 2, MISC_MSG_WITH_ARGS, arg_id, arg_name);
    // clang-format on
+
    char *assert_str = platform_log_stream_to_string(&stream);
+
+   // Skip other pid/tid details prepended to the message
+   assert_str = strstr(assert_str, "Assertion");
 
    // Construct an expected assertion message, using parts we know about.
    char expmsg[ASSERT_OUTBUF_LEN];
@@ -120,7 +143,7 @@ CTEST2(misc, test_assert_msg_with_args)
             arg_name);
 
    ASSERT_STREQN(expmsg, assert_str, strlen(expmsg));
-   platform_close_log_stream(&stream, Platform_error_log_handle);
+   platform_close_log_stream(&stream, data->log_output);
 }
 
 /*
@@ -157,7 +180,7 @@ CTEST2(misc, test_ctest_assert_prints_user_msg_with_params)
                  expmsg,
                  expmsg_len,
                  assert_str);
-   platform_close_log_stream(&stream, Platform_error_log_handle);
+   platform_close_log_stream(&stream, data->log_output);
 }
 
 /* Helper functions follow all test case methods */

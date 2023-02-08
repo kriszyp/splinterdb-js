@@ -2,26 +2,42 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <stdarg.h>
+#include <unistd.h>
 #include "platform.h"
 
 #include <sys/mman.h>
 
-__thread threadid xxxtid;
+__thread threadid xxxtid = INVALID_TID;
 
 bool platform_use_hugetlb = FALSE;
 bool platform_use_mlock   = FALSE;
 
-// By default, platform_default_log() messages go to stdout, and
-// platform_error_log() messages go to stderr. These can be changed to module-
-// or test-specific log files, by overriding these settings.
+// By default, platform_default_log() messages are sent to /dev/null
+// and platform_error_log() messages go to stderr (see below).
+//
+// Use platform_set_log_streams() to send the log messages elsewhere.
 platform_log_handle *Platform_default_log_handle = NULL;
 platform_log_handle *Platform_error_log_handle   = NULL;
 
 // This function is run automatically at library-load time
 void __attribute__((constructor)) platform_init_log_file_handles(void)
 {
-   Platform_default_log_handle = stdout;
+   FILE *dev_null_file = fopen("/dev/null", "w");
+   platform_assert(dev_null_file != NULL);
+
+   Platform_default_log_handle = dev_null_file;
    Platform_error_log_handle   = stderr;
+}
+
+// Set the streams where informational and error messages will be printed.
+void
+platform_set_log_streams(platform_log_handle *info_stream,
+                         platform_log_handle *error_stream)
+{
+   platform_assert(info_stream != NULL);
+   platform_assert(error_stream != NULL);
+   Platform_default_log_handle = info_stream;
+   Platform_error_log_handle   = error_stream;
 }
 
 platform_status
@@ -356,8 +372,16 @@ platform_assert_msg(platform_log_handle *log_handle,
                     const char          *message,
                     va_list              varargs)
 {
-   static char assert_msg_fmt[] = "Assertion failed at %s:%d:%s(): \"%s\". ";
-   platform_log(
-      log_handle, assert_msg_fmt, filename, linenumber, functionname, expr);
+   static char assert_msg_fmt[] = "OS-pid=%d, OS-tid=%lu, Thread-ID=%lu, "
+                                  "Assertion failed at %s:%d:%s(): \"%s\". ";
+   platform_log(log_handle,
+                assert_msg_fmt,
+                getpid(),
+                gettid(),
+                platform_get_tid(), // SplinterDB's thread-ID (index)
+                filename,
+                linenumber,
+                functionname,
+                expr);
    vfprintf(log_handle, message, varargs);
 }

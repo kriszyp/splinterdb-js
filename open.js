@@ -56,15 +56,7 @@ export function open(path, options) {
 		path,
 		noSubdir: Boolean(extension),
 		isRoot: true,
-		maxDbs: 12,
-		remapChunks,
 		keyBytes,
-		overlappingSync: (options.noSync || options.readOnly) ? false : (os != 'win32'),
-		// default map size limit of 4 exabytes when using remapChunks, since it is not preallocated and we can
-		// make it super huge.
-		mapSize: remapChunks ? 0x10000000000000 :
-			0x20000, // Otherwise we start small with 128KB
-		safeRestore: process.env.LMDB_RESTORE == 'safe',
 	}, options);
 	if (options.asyncTransactionOrder == 'strict') {
 		options.strictAsyncOrder = true;
@@ -141,7 +133,7 @@ export function open(path, options) {
 		process.on('exit', onExit);
 	}
 */
-	class LMDBStore extends EventEmitter {
+	class SplinterDBStore extends EventEmitter {
 		constructor(dbName, dbOptions) {
 			super();
 			if (dbName === undefined)
@@ -231,8 +223,8 @@ export function open(path, options) {
 				dbOptions = dbOptions || {};
 			try {
 				return dbOptions.cache ?
-					new (CachingStore(LMDBStore, env))(dbName, dbOptions) :
-					new LMDBStore(dbName, dbOptions);
+					new (CachingStore(SplinterDBStore, env))(dbName, dbOptions) :
+					new SplinterDBStore(dbName, dbOptions);
 			} catch(error) {
 				if (error.message == 'Database not found')
 					return; // return undefined to indicate db not found
@@ -330,13 +322,13 @@ export function open(path, options) {
 		}
 	}
 	// if caching class overrides putSync, don't want to double call the caching code
-	const putSync = LMDBStore.prototype.putSync;
-	const removeSync = LMDBStore.prototype.removeSync;
-	addReadMethods(LMDBStore, { env, maxKeySize, keyBytes, keyBytesView, getLastVersion });
+	const putSync = SplinterDBStore.prototype.putSync;
+	const removeSync = SplinterDBStore.prototype.removeSync;
+	addReadMethods(SplinterDBStore, { env, maxKeySize, keyBytes, keyBytesView, getLastVersion });
 	if (!options.readOnly)
-		addWriteMethods(LMDBStore, { env, maxKeySize, fixedBuffer: keyBytes,
-			resetReadTxn: LMDBStore.prototype.resetReadTxn, ...options });
-	LMDBStore.prototype.supports = {
+		addWriteMethods(SplinterDBStore, { env, maxKeySize, fixedBuffer: keyBytes,
+			resetReadTxn: SplinterDBStore.prototype.resetReadTxn, ...options });
+	SplinterDBStore.prototype.supports = {
 		permanence: true,
 		bufferKeys: true,
 		promises: true,
@@ -346,7 +338,7 @@ export function open(path, options) {
 		deferredOpen: true,
 		openCallback: true,	
 	};
-	let Class = options.cache ? CachingStore(LMDBStore, env) : LMDBStore;
+	let Class = options.cache ? CachingStore(SplinterDBStore, env) : SplinterDBStore;
 	return options.asClass ? Class : new Class(options.name || null, options);
 }
 export function openAsClass(path, options) {

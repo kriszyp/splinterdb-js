@@ -137,10 +137,11 @@ void detachBuffer(const FunctionCallbackInfo<v8::Value>& info) {
 			Local<Signature>(), 0, ConstructorBehavior::kThrow,\
 			SideEffectType::kHasNoSideEffect)->GetFunction(isolate->GetCurrentContext()).ToLocalChecked());
 
-Napi::Value enableDirectV8(const Napi::CallbackInfo& info) {
+napi_value enableDirectV8(napi_env env, napi_callback_info info);
+	ARGS(1)
 	#if ENABLE_V8_API
 	Isolate* isolate = Isolate::GetCurrent();
-	napi_value exportsValue = info[0];
+	napi_value exportsValue = args[0];
 	Local<v8::Object> exports;
 	memcpy((void*) &exports, (void*) &exportsValue, sizeof(exportsValue));
 	#if NODE_VERSION_AT_LEAST(16,6,1)
@@ -166,5 +167,5 @@ Napi::Value enableDirectV8(const Napi::CallbackInfo& info) {
 	EXPORT_FUNCTION("clearKeptObjects", clearKeptObjects);
 	EXPORT_FUNCTION("detachBuffer", detachBuffer);
 	#endif
-	return info.Env().Undefined();
+	RETURN_UNDEFINED
 }

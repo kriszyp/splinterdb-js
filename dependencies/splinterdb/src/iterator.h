@@ -1,15 +1,16 @@
 // Copyright 2018-2021 VMware, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef __ITERATOR_H
-#define __ITERATOR_H
+#pragma once
 
-#include "splinterdb/data.h"
+#include "data_internal.h"
 #include "util.h"
 
 typedef struct iterator iterator;
 
-typedef void (*iterator_get_curr_fn)(iterator *itor, slice *key, message *msg);
+typedef void (*iterator_get_curr_fn)(iterator *itor,
+                                     key      *curr_key,
+                                     message  *msg);
 typedef platform_status (*iterator_at_end_fn)(iterator *itor, bool *at_end);
 typedef platform_status (*iterator_advance_fn)(iterator *itor);
 typedef void (*iterator_print_fn)(iterator *itor);
@@ -28,9 +29,9 @@ struct iterator {
 };
 
 static inline void
-iterator_get_curr(iterator *itor, slice *key, message *msg)
+iterator_get_curr(iterator *itor, key *curr_key, message *msg)
 {
-   itor->ops->get_curr(itor, key, msg);
+   itor->ops->get_curr(itor, curr_key, msg);
 }
 
 static inline platform_status
@@ -50,5 +51,3 @@ iterator_print(iterator *itor)
 {
    return itor->ops->print(itor);
 }
-
-#endif // __ITERATOR_H

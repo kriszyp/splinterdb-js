@@ -84,7 +84,7 @@ function record_elapsed_time() {
       # Provide wider test-tag for nightly tests which print verbose descriptions
       fmtstr="%-80s""${fmtstr}"
    else
-      fmtstr="%-50s""${fmtstr}"
+      fmtstr="%-70s""${fmtstr}"
    fi
 
    # Log a line in the /tmp log-file; for future cat of summary output
@@ -268,6 +268,21 @@ function nightly_sync_perf_tests() {
                                                 --lookup-positive-percent 10 \
                                                 --tree-size-gib ${tree_size} \
                                                 --db-capacity-gib 60 \
+                                                --db-location ${dbname}
+    rm ${dbname}
+
+    # Exercise a case with max # of insert-threads which tripped an assertion
+    # This isn't really a 'perf' test but a regression / stability test exec
+    nins_t=63
+    nrange_lookup_t=0
+    test_descr="${nins_t} insert threads"
+    dbname="splinter_test.max_threads.db"
+
+    run_with_timing "Performance with max-threads ${test_descr}" \
+            "$BINDIR"/driver_test splinter_test --perf \
+                                                --num-insert-threads ${nins_t} \
+                                                --num-range-lookup-threads ${nrange_lookup_t} \
+                                                --tree-size-gib 1 \
                                                 --db-location ${dbname}
     rm ${dbname}
 }
@@ -507,33 +522,25 @@ function test_make_run_tests() {
 }
 
 # ##################################################################
-# Exercise example programs, to ensure that they don't fail.
-# ##################################################################
-function test_example_programs() {
-
-    "$BINDIR"/examples/splinterdb_intro_example
-    "$BINDIR"/examples/splinterdb_wide_values_example
-    "$BINDIR"/examples/splinterdb_iterators_example
-    "$BINDIR"/examples/splinterdb_custom_ipv4_addr_sortcmp_example
-}
-
-# ##################################################################
 # Smoke Tests: Run a small collection of fast-running unit-tests
 # ##################################################################
 function run_fast_unit_tests() {
+
    "$BINDIR"/unit/splinterdb_quick_test
    "$BINDIR"/unit/btree_test
    "$BINDIR"/unit/util_test
    "$BINDIR"/unit/misc_test
    "$BINDIR"/unit/limitations_test
    "$BINDIR"/unit/task_system_test
+
+   "$BINDIR"/driver_test io_apis_test
 }
 
 # ##################################################################
 # Run mini-unit-tests that were excluded from bin/unit_test binary:
 # Explicitly run individual cases from specific slow running unit-tests,
 # where appropriate with a different test-configuration that has been
-# found to to provide the required coverage.
+# found to provide the required coverage.
 # ##################################################################
 function run_slower_unit_tests() {
 
@@ -560,7 +567,12 @@ function run_splinter_functionality_tests() {
         "$BINDIR"/driver_test splinter_test --functionality 1000000 100 \
                                             --seed "$SEED"
 
-    max_key_size=105
+    run_with_timing "Functionality test, default key size, with background threads" \
+        "$BINDIR"/driver_test splinter_test --functionality 1000000 100 \
+                                            --num-normal-bg-threads 4 --num-memtable-bg-threads 2 \
+                                            --seed "$SEED"
+
+    max_key_size=102
     run_with_timing "Functionality test, key size=maximum (${max_key_size} bytes)" \
         "$BINDIR"/driver_test splinter_test --functionality 1000000 100 \
                                             --key-size ${max_key_size} --seed "$SEED"
@@ -583,6 +595,17 @@ function run_splinter_perf_tests() {
                                             --num-inserts 10000 \
                                             --cache-capacity-mib 512 \
                                             --verbose-progress
+
+   # Re-run small perf test configuring background threads. This scenario
+   # validates that we can configure bg- and user-threads in one go.
+   run_with_timing "Quick Performance test with bg-threads" \
+        "$BINDIR"/driver_test splinter_test --perf \
+                                            --num-insert-threads 4 \
+                                            --num-lookup-threads 4 \
+                                            --num-inserts 10000 \
+                                            --cache-capacity-mib 512 \
+                                            --num-normal-bg-threads 1 \
+                                            --num-memtable-bg-threads 1
 
    run_with_timing "Performance test" \
         "$BINDIR"/driver_test splinter_test --perf \
@@ -709,8 +732,6 @@ if [ "$INCLUDE_SLOW_TESTS" != "true" ]; then
    start_seconds=$SECONDS
 
    run_with_timing "Smoke tests" run_fast_unit_tests
-
-   run_with_timing "Test example programs" test_example_programs
 
    if [ "$RUN_MAKE_TESTS" == "true" ]; then
       run_with_timing "Basic build-and-test tests" test_make_run_tests

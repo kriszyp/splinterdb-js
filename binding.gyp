@@ -42,7 +42,6 @@
         "dependencies/splinterdb/include",
         "dependencies/splinterdb/src",
         "dependencies/splinterdb/src/platform_linux",
-        "dependencies/xxHash",
         "dependencies/lz4/lib"
       ],
       "libraries": ["~/dev/splinterdb-js/dependencies/splinterdb/build/release/lib/libsplinterdb.a", "-lm", "-lpthread","-laio", "-lxxhash"],

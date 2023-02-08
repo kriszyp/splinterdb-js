@@ -29,10 +29,7 @@ static void
 create_default_cfg(splinterdb_config *out_cfg, data_config *default_data_cfg);
 
 static platform_status
-splinter_init_subsystems(void *arg);
-
-static void
-splinter_deinit_subsystems(void *arg);
+parse_cmdline_args(void *datap, int unit_test_argc, char **unit_test_argv);
 
 /*
  * Global data declaration macro:
@@ -44,13 +41,12 @@ CTEST_DATA(limitations)
    platform_heap_id     hid;
 
    // Config structs required, as per splinter_test() setup work.
-   io_config           io_cfg;
-   rc_allocator_config al_cfg;
-   shard_log_config    log_cfg;
+   io_config          io_cfg;
+   allocator_config   al_cfg;
+   shard_log_config   log_cfg;
+   task_system_config task_cfg;
 
    rc_allocator al;
-
-   uint8 num_bg_threads[NUM_TASK_TYPES];
 
    // Following get setup pointing to allocated memory
    trunk_config          *splinter_cfg;
@@ -69,23 +65,31 @@ CTEST_DATA(limitations)
  * Setup heap memory to be used later to test Splinter configuration.
  * splinter_test().
  */
-// clang-format off
 CTEST_SETUP(limitations)
 {
-   Platform_default_log_handle = fopen("/tmp/unit_test.stdout", "a+");
-   Platform_error_log_handle = fopen("/tmp/unit_test.stderr", "a+");
+   // This test exercises error cases, so even when everything succeeds
+   // it generates lots of "error" messages.
+   // By default, that would go to stderr, which would pollute test output.
+   // Here we ensure those expected error messages are only printed
+   // when the caller sets the VERBOSE env var to opt-in.
+   if (Ctest_verbose) {
+      platform_set_log_streams(stdout, stderr);
+      CTEST_LOG_INFO("\nVerbose mode on.  This test exercises an error case, "
+                     "so on sucess it "
+                     "will print a message that appears to be an error.\n");
+   } else {
+      FILE *dev_null = fopen("/dev/null", "w");
+      ASSERT_NOT_NULL(dev_null);
+      platform_set_log_streams(dev_null, dev_null);
+   }
 
    uint64 heap_capacity = (1 * GiB);
 
    // Create a heap for io, allocator, cache and splinter
-   platform_status rc = platform_heap_create(platform_get_module_id(),
-                                             heap_capacity,
-                                             &data->hh,
-                                             &data->hid);
+   platform_status rc = platform_heap_create(
+      platform_get_module_id(), heap_capacity, &data->hh, &data->hid);
    platform_assert_status_ok(rc);
 }
-
-// clang-format on
 
 /*
  * Tear down memory allocated for various sub-systems. Shutdown Splinter.
@@ -121,6 +125,7 @@ CTEST2(limitations, test_io_init_invalid_page_size)
                           &data->al_cfg,
                           data->cache_cfg,
                           &data->log_cfg,
+                          &data->task_cfg,
                           &data->test_exec_cfg,
                           &data->gen,
                           num_tables,
@@ -191,6 +196,7 @@ CTEST2(limitations, test_io_init_invalid_extent_size)
                           &data->al_cfg,
                           data->cache_cfg,
                           &data->log_cfg,
+                          &data->task_cfg,
                           &data->test_exec_cfg,
                           &data->gen,
                           num_tables,
@@ -244,6 +250,26 @@ CTEST2(limitations, test_io_init_invalid_extent_size)
 }
 
 /*
+ * Test creating SplinterDB with an invalid task system configuration.
+ */
+CTEST2(limitations, test_splinterdb_create_invalid_task_system_config)
+{
+   splinterdb       *kvsb;
+   splinterdb_config cfg;
+   data_config       default_data_cfg;
+
+   default_data_config_init(TEST_MAX_KEY_SIZE, &default_data_cfg);
+   create_default_cfg(&cfg, &default_data_cfg);
+
+   // Cannot use up all possible threads for just bg-threads.
+   cfg.num_normal_bg_threads   = (MAX_THREADS - 1);
+   cfg.num_memtable_bg_threads = 1;
+
+   int rc = splinterdb_create(&cfg, &kvsb);
+   ASSERT_NOT_EQUAL(0, rc);
+}
+
+/*
  * Test splinterdb_*() interfaces with invalid page- / extent-size
  * configurations, and verify that they fail correctly.
  */
@@ -287,106 +313,6 @@ CTEST2(limitations, test_splinterdb_create_invalid_extent_size)
    cfg.extent_size = (extent_size_configured * 2);
    rc              = splinterdb_create(&cfg, &kvsb);
    ASSERT_NOT_EQUAL(0, rc);
-}
-
-/*
- * Test splinterdb_*() interfaces with invalid key-size to verify that
- * we correctly fail before mounting the device. Invalid key-size during
- * create will be caught by checks inside trunk_create(). Here, we just
- * check that re-mounting an existing valid Splinter device when the
- * configured key-size is changed is also trapped cleanly.
- */
-CTEST2(limitations, test_splinterdb_mount_invalid_key_size)
-{
-   splinterdb       *kvsb;
-   splinterdb_config cfg;
-   data_config       default_data_cfg;
-
-   default_data_config_init(TEST_MAX_KEY_SIZE, &default_data_cfg);
-   create_default_cfg(&cfg, &default_data_cfg);
-
-   // This should succeed.
-   int rc = splinterdb_create(&cfg, &kvsb);
-   ASSERT_EQUAL(0, rc);
-
-   splinterdb_close(&kvsb);
-
-   // We have carefully configured Splinter to use the default key-size
-   // used by tests. Force-it to be an invalid value, to check that
-   // core-Splinter trunk mount also properly generates an error message
-   cfg.data_cfg->key_size = (MAX_KEY_SIZE + 1);
-
-   // This should fail.
-   rc = splinterdb_open(&cfg, &kvsb);
-   ASSERT_NOT_EQUAL(0, rc);
-}
-
-/*
- * Test case to verify that max key-size is correctly implemented by the
- * trunk layer when a new SplinterDB instance is being created.
- */
-CTEST2(limitations, test_trunk_create_invalid_key_size)
-{
-   platform_status rc = STATUS_OK;
-
-   rc = splinter_init_subsystems(data);
-   ASSERT_TRUE(SUCCESS(rc));
-
-   allocator *alp = (allocator *)&data->al;
-
-   // We have carefully configured Splinter to use the default key-size
-   // used by tests. Force-it to be an invalid value, to check that
-   // core-Splinter trunk creation properly generates an error message
-   data->splinter_cfg->data_cfg->key_size = (MAX_KEY_SIZE + 1);
-
-   trunk_handle *spl = trunk_create(data->splinter_cfg,
-                                    alp,
-                                    (cache *)data->clock_cache,
-                                    data->tasks,
-                                    test_generate_allocator_root_id(),
-                                    data->hid);
-   ASSERT_NULL(spl);
-
-   splinter_deinit_subsystems(data);
-}
-
-/*
- * Test case to verify that max key-size is correctly implemented by the
- * trunk layer when an existing SplinterDB instance is being mounted.
- */
-CTEST2(limitations, test_trunk_mount_invalid_key_size)
-{
-   platform_status rc = STATUS_OK;
-
-   rc = splinter_init_subsystems(data);
-   ASSERT_TRUE(SUCCESS(rc));
-
-   allocator *alp = (allocator *)&data->al;
-
-   trunk_handle *spl = trunk_create(data->splinter_cfg,
-                                    alp,
-                                    (cache *)data->clock_cache,
-                                    data->tasks,
-                                    test_generate_allocator_root_id(),
-                                    data->hid);
-   ASSERT_NOT_NULL(spl);
-
-   trunk_destroy(spl);
-
-   // We have carefully configured Splinter to use the default key-size
-   // used by tests. Force-it to be an invalid value, to check that
-   // core-Splinter trunk creation properly generates an error message
-   data->splinter_cfg->data_cfg->key_size = (MAX_KEY_SIZE + 1);
-
-   spl = trunk_mount(data->splinter_cfg,
-                     alp,
-                     (cache *)data->clock_cache,
-                     data->tasks,
-                     test_generate_allocator_root_id(),
-                     data->hid);
-   ASSERT_NULL(spl);
-
-   splinter_deinit_subsystems(data);
 }
 
 /*
@@ -464,6 +390,55 @@ CTEST2(limitations, test_disk_size_not_integral_multiple_of_extents)
    ASSERT_NOT_EQUAL(0, rc);
 }
 
+/*
+ * **************************************************************************
+ * Test that an invalid configuration that makes trunk node configuration
+ * impractical fails correctly with an error message. We try out few diff
+ * config params that go into error checks in trunk_config_init().
+ * **************************************************************************
+ */
+CTEST2(limitations, test_trunk_config_init_fails_for_invalid_configs)
+{
+   platform_status rc;
+   uint64          num_tables = 1;
+
+   // Allocate memory for global config structures
+   data->splinter_cfg =
+      TYPED_ARRAY_MALLOC(data->hid, data->splinter_cfg, num_tables);
+
+   data->cache_cfg = TYPED_ARRAY_MALLOC(data->hid, data->cache_cfg, num_tables);
+
+   char *unit_test_argv0[] = {"--key-size", "1000"};
+   int   unit_test_argc    = ARRAY_SIZE(unit_test_argv0);
+
+   char **unit_test_argv = unit_test_argv0;
+   rc = parse_cmdline_args(data, unit_test_argc, unit_test_argv);
+   ASSERT_FALSE(SUCCESS(rc));
+
+   char *unit_test_argv1[] = {"--page-size", "4096", "--fanout", "100"};
+   unit_test_argc          = ARRAY_SIZE(unit_test_argv1);
+
+   unit_test_argv = unit_test_argv1;
+   rc             = parse_cmdline_args(data, unit_test_argc, unit_test_argv);
+   ASSERT_FALSE(SUCCESS(rc));
+
+   char *unit_test_argv2[] = {"--max-branches-per-node", "200"};
+   unit_test_argc          = ARRAY_SIZE(unit_test_argv2);
+
+   unit_test_argv = unit_test_argv2;
+   rc             = parse_cmdline_args(data, unit_test_argc, unit_test_argv);
+   ASSERT_FALSE(SUCCESS(rc));
+
+   // Release resources acquired in this test case.
+   if (data->cache_cfg) {
+      platform_free(data->hid, data->cache_cfg);
+   }
+
+   if (data->splinter_cfg) {
+      platform_free(data->hid, data->splinter_cfg);
+   }
+}
+
 CTEST2(limitations, test_zero_cache_size)
 {
    splinterdb       *kvsb;
@@ -481,6 +456,28 @@ CTEST2(limitations, test_zero_cache_size)
 
    int rc = splinterdb_create(&cfg, &kvsb);
    ASSERT_NOT_EQUAL(0, rc);
+}
+/*
+ * Check that errors on file-opening are returned, not asserted.
+ * Previously, a user error, e.g. bad file permissions, would
+ * just crash the program.
+ */
+CTEST2(limitations, test_file_error_returns)
+{
+   splinterdb       *kvsb;
+   splinterdb_config cfg;
+   data_config       default_data_cfg;
+
+   default_data_config_init(TEST_MAX_KEY_SIZE, &default_data_cfg);
+   create_default_cfg(&cfg, &default_data_cfg);
+
+   cfg.filename = "/dev/null/this-file-cannot-possibly-be-opened";
+
+   // this will fail, but shouldn't crash!
+   int rc = splinterdb_create(&cfg, &kvsb);
+   ASSERT_NOT_EQUAL(0, rc);
+   // if we've made it this far, at least the application can report
+   // the error and recover!
 }
 
 /*
@@ -500,114 +497,34 @@ create_default_cfg(splinterdb_config *out_cfg, data_config *default_data_cfg)
 }
 
 /*
- * Shared do-it-all configure and init Splinter subsystems routine.
+ * Helper function to parse command-line arguments to setup the configuration
+ * for SplinterDB.
  */
 static platform_status
-splinter_init_subsystems(void *arg)
+parse_cmdline_args(void *datap, int unit_test_argc, char **unit_test_argv)
 {
    // Cast void * datap to ptr-to-CTEST_DATA() struct in use.
    struct CTEST_IMPL_DATA_SNAME(limitations) *data =
-      (struct CTEST_IMPL_DATA_SNAME(limitations) *)arg;
-
-   uint64 num_tables = 1;
-
-   // Allocate memory for global config structures
-   data->splinter_cfg =
-      TYPED_ARRAY_MALLOC(data->hid, data->splinter_cfg, num_tables);
-
-   data->cache_cfg = TYPED_ARRAY_MALLOC(data->hid, data->cache_cfg, num_tables);
+      (struct CTEST_IMPL_DATA_SNAME(limitations) *)datap;
 
    ZERO_STRUCT(data->test_exec_cfg);
 
-   platform_status rc = STATUS_OK;
+   uint64 num_memtable_bg_threads_unused = 0;
+   uint64 num_normal_bg_threads_unused   = 0;
+   uint64 seed                           = 0;
 
-   rc = test_parse_args_n(data->splinter_cfg,
-                          &data->data_cfg,
-                          &data->io_cfg,
-                          &data->al_cfg,
-                          data->cache_cfg,
-                          &data->log_cfg,
-                          &data->test_exec_cfg,
-                          &data->gen,
-                          num_tables,
-                          Ctest_argc, // argc/argv globals setup by CTests
-                          (char **)Ctest_argv);
-   platform_assert_status_ok(rc);
-
-   // Allocate and initialize the IO sub-system.
-   data->io = TYPED_MALLOC(data->hid, data->io);
-   ASSERT_TRUE((data->io != NULL));
-   rc = io_handle_init(data->io, &data->io_cfg, data->hh, data->hid);
-
-   // no bg threads by default.
-   for (int idx = 0; idx < NUM_TASK_TYPES; idx++) {
-      data->num_bg_threads[idx] = 0;
-   }
-
-   bool use_bg_threads = data->num_bg_threads[TASK_TYPE_NORMAL] != 0;
-
-   rc = test_init_task_system(data->hid,
-                              data->io,
-                              &data->tasks,
-                              data->splinter_cfg->use_stats,
-                              use_bg_threads,
-                              data->num_bg_threads);
-   ASSERT_TRUE(SUCCESS(rc),
-               "Failed to init splinter state: %s\n",
-               platform_status_to_string(rc));
-
-   rc_allocator_init(&data->al,
-                     &data->al_cfg,
-                     (io_handle *)data->io,
-                     data->hh,
-                     data->hid,
-                     platform_get_module_id());
-
-   int num_caches = 1;
-
-   data->clock_cache =
-      TYPED_ARRAY_MALLOC(data->hid, data->clock_cache, num_caches);
-   ASSERT_TRUE((data->clock_cache != NULL));
-
-   for (uint8 idx = 0; idx < num_caches; idx++) {
-      rc = clockcache_init(&data->clock_cache[idx],
-                           &data->cache_cfg[idx],
-                           (io_handle *)data->io,
-                           (allocator *)&data->al,
-                           "test",
-                           data->hh,
-                           data->hid,
-                           platform_get_module_id());
-
-      ASSERT_TRUE(SUCCESS(rc), "clockcache_init() failed for index=%d. ", idx);
-   }
+   platform_status rc = test_parse_args(data->splinter_cfg,
+                                        &data->data_cfg,
+                                        &data->io_cfg,
+                                        &data->al_cfg,
+                                        data->cache_cfg,
+                                        &data->log_cfg,
+                                        &data->task_cfg,
+                                        &seed,
+                                        &data->gen,
+                                        &num_memtable_bg_threads_unused,
+                                        &num_normal_bg_threads_unused,
+                                        unit_test_argc,
+                                        unit_test_argv);
    return rc;
-}
-
-static void
-splinter_deinit_subsystems(void *arg)
-{
-   // Cast void * datap to ptr-to-CTEST_DATA() struct in use.
-   struct CTEST_IMPL_DATA_SNAME(limitations) *data =
-      (struct CTEST_IMPL_DATA_SNAME(limitations) *)arg;
-
-   clockcache_deinit(data->clock_cache);
-   platform_free(data->hid, data->clock_cache);
-
-   allocator *alp = (allocator *)&data->al;
-   allocator_assert_noleaks(alp);
-
-   rc_allocator_deinit(&data->al);
-   test_deinit_task_system(data->hid, &data->tasks);
-
-   io_handle_deinit(data->io);
-   platform_free(data->hid, data->io);
-
-   if (data->cache_cfg) {
-      platform_free(data->hid, data->cache_cfg);
-   }
-
-   if (data->splinter_cfg) {
-      platform_free(data->hid, data->splinter_cfg);
-   }
 }

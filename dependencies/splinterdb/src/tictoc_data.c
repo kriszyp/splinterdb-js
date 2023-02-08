@@ -17,13 +17,15 @@ tictoc_rw_entry_is_invalid(tictoc_rw_entry *entry)
 }
 
 tictoc_rw_entry *
-tictoc_rw_entry_create()
+tictoc_rw_entry_create(tictoc_transaction *tt_txn)
 {
    tictoc_rw_entry *new_entry;
    new_entry = TYPED_ZALLOC(0, new_entry);
    platform_assert(new_entry != NULL);
 
    RB_CLEAR_NODE(&new_entry->rb);
+
+   new_entry->owner = (uint64)tt_txn;
 
    return new_entry;
 }
@@ -72,7 +74,7 @@ tictoc_get_new_read_set_entry(tictoc_transaction *tt_txn)
       return NULL;
    }
 
-   tictoc_rw_entry *new_entry           = tictoc_rw_entry_create();
+   tictoc_rw_entry *new_entry           = tictoc_rw_entry_create(tt_txn);
    tt_txn->read_set[tt_txn->read_cnt++] = new_entry;
 
    return new_entry;
@@ -91,7 +93,7 @@ tictoc_get_new_write_set_entry(tictoc_transaction *tt_txn)
       return NULL;
    }
 
-   tictoc_rw_entry *new_entry             = tictoc_rw_entry_create();
+   tictoc_rw_entry *new_entry             = tictoc_rw_entry_create(tt_txn);
    tt_txn->write_set[tt_txn->write_cnt++] = new_entry;
 
    return new_entry;
@@ -115,7 +117,10 @@ tictoc_rw_entry_is_not_in_write_set(tictoc_transaction *tt_txn,
       tictoc_rw_entry *w    = tictoc_get_write_set_entry(tt_txn, i);
       slice            wkey = writable_buffer_to_slice(&w->key);
 
-      if (data_key_compare(cfg, entry_key, wkey) == 0) {
+      if (data_key_compare(
+             cfg, key_create_from_slice(entry_key), key_create_from_slice(wkey))
+          == 0)
+      {
          return FALSE;
       }
    }
@@ -160,8 +165,8 @@ tictoc_rw_entry_key_comp(const void *elem1, const void *elem2, void *args)
    tictoc_rw_entry  **b   = (tictoc_rw_entry **)elem2;
    const data_config *cfg = (const data_config *)args;
 
-   slice akey = writable_buffer_to_slice(&(*a)->key);
-   slice bkey = writable_buffer_to_slice(&(*b)->key);
+   key akey = key_create_from_slice(writable_buffer_to_slice(&(*a)->key));
+   key bkey = key_create_from_slice(writable_buffer_to_slice(&(*b)->key));
 
    return data_key_compare(cfg, akey, bkey);
 }
@@ -184,9 +189,9 @@ tictoc_transaction_lock_all_write_set(tictoc_transaction *tt_txn,
 {
    uint64 locked_cnt = 0;
    for (uint64 i = 0; i < tt_txn->write_cnt; ++i) {
-      bool is_acquired = lock_table_try_acquire_entry_lock(
+      lock_table_rc rc = lock_table_try_acquire_entry_lock(
          lock_tbl, tictoc_get_write_set_entry(tt_txn, i));
-      if (!is_acquired) {
+      if (rc == LOCK_TABLE_RC_BUSY) {
          for (uint64 j = 0; j < locked_cnt; ++j) {
             lock_table_release_entry_lock(
                lock_tbl, tictoc_get_write_set_entry(tt_txn, j));

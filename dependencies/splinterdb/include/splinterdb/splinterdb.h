@@ -15,12 +15,6 @@
 
 #include "splinterdb/data.h"
 
-
-// Hack to accomodate encoding variable-length keys
-// This will go away once real variable-length key support lands in trunk.c
-#define SPLINTERDB_MAX_KEY_SIZE (MAX_KEY_SIZE - 1)
-
-
 // Get a version string for this build of SplinterDB
 // Currently a git tag
 const char *
@@ -56,6 +50,21 @@ typedef struct {
    bool        cache_use_stats;
    const char *cache_logfile;
 
+   // task system
+   // Background threads configuration:
+   //
+   // - Memtable bg-threads work on Memtables tasks which are short but latency
+   //   sensitive. A rule of thumb is to allocate around 1 memtable bg-thread
+   //   for every 10 threads performing insertions. Too few memtable threads
+   //   can cause some insertions to have high latency.
+   // - Normal bg-threads work on task such as compacting branches in the trunk
+   //   and building filters. These tasks take longer and are less latency
+   //   sensitive. A rule of thumb is to allocate 1-2 normal background
+   //   threads for every thread performing insertions. Too few "normal"
+   //   background threads can cause disk I/O bandwidth to go underutilized.
+   uint64 num_memtable_bg_threads;
+   uint64 num_normal_bg_threads;
+
    // btree
    uint64 btree_rough_count_height;
 
@@ -72,6 +81,47 @@ typedef struct {
    uint64 max_branches_per_node;
    uint64 use_stats;
    uint64 reclaim_threshold;
+
+   // The following parameter governs when foreground threads
+   // performing an update to the database will perform queued
+   // background tasks.  When a foreground thread performs a
+   // background task, the latency of that update can be very large,
+   // because some background tasks can take many milliseconds to
+   // execute.  However, if foreground threads never perform
+   // background tasks, then queues of background tasks may grow
+   // unboundedly if there are not enough background threads, and this
+   // may cause some processes, such as memtable rotation, to stall
+   // updates to the database.
+
+   // When queue_scale_percent is 0, then foreground threads will
+   // perform a background task whenever one is available.  This will
+   // result in high tail latencies for database updates, but will
+   // ensure that background task queues are always short.
+
+   // When queue_scale_percent is UINT64_MAX, then foreground threads
+   // will never perform background tasks unless there are no background
+   // threads allocated to that task group.  This will ensure that
+   // foreground tasks have low latency, but requires that you
+   // configure enough background threads to keep up with arriving
+   // background tasks.  Thus you should use this option only if you
+   // know how many background threads you need for each task type.
+
+   // The default value of 100 says that foreground threads will begin
+   // performing background tasks if there are more queued tasks than
+   // there are background threads to serve them. This heuristic
+   // allows you to configure the number of background threads as you
+   // see fit, and the system will do its best to execute tasks on the
+   // provided background threads, but will perform tasks on
+   // foreground threads if needed.
+
+   // Increasing this value (e.g. to 200, 300, etc), will cause more
+   // work to take place on background threads, but task queues may
+   // grow longer, causing some other parts of the system to stall.
+   // Decreasing this value (e.g. to 50, 25, 10, etc) will cause more
+   // work to be performed on foreground threads, increasing tail
+   // latencies.
+   uint64 queue_scale_percent;
+
 } splinterdb_config;
 
 // Opaque handle to an opened instance of SplinterDB
@@ -306,5 +356,24 @@ splinterdb_iterator_get_current(splinterdb_iterator *iter, // IN
 // End-of-range is not an error
 int
 splinterdb_iterator_status(const splinterdb_iterator *iter);
+
+/*
+ * Statistics Printing
+ *
+ * Must set the use_stats config option.
+ *
+ * Prints insertion or lookup statistics. Both print cache statistics.
+ *
+ * Reset statistics clears all statistics, including cache statistics.
+ */
+
+void
+splinterdb_stats_print_insertion(const splinterdb *kvs);
+
+void
+splinterdb_stats_print_lookup(const splinterdb *kvs);
+
+void
+splinterdb_stats_reset(splinterdb *kvs);
 
 #endif // _SPLINTERDB_H_

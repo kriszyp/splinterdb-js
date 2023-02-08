@@ -7,8 +7,7 @@
  *     This file contains the interface for the splinter memtable.
  */
 
-#ifndef __MEMTABLE_H
-#define __MEMTABLE_H
+#pragma once
 
 #include "platform.h"
 #include "task.h"
@@ -150,7 +149,7 @@ platform_status
 memtable_insert(memtable_context *ctxt,
                 memtable         *mt,
                 platform_heap_id  heap_id,
-                const char       *key,
+                key               tuple_key,
                 message           msg,
                 uint64           *generation);
 
@@ -295,12 +294,3 @@ memtable_print_stats(platform_log_handle *log_handle, cache *cc, memtable *mt)
 {
    btree_print_tree_stats(log_handle, cc, mt->cfg, mt->root_addr);
 };
-
-static inline void
-memtable_key_to_string(memtable *mt, const char *key, char *key_str)
-{
-   slice key_slice = slice_create(mt->cfg->data_cfg->key_size, key);
-   btree_key_to_string(mt->cfg, key_slice, key_str);
-}
-
-#endif // __MEMTABLE_H

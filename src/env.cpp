@@ -144,9 +144,9 @@ int DbWrap::openDB(int flags, int jsFlags, const char* path, char* keyBuffer, Co
 	this->jsFlags = jsFlags;
 	this->hasVersions = false;
 
-// Initialize data configuration, using default key-comparison handling.
-	data_config splinter_data_cfg;
-	default_data_config_init(USER_MAX_KEY_SIZE, &splinter_data_cfg);
+	// Initialize data configuration, using default key-comparison handling.
+	auto splinter_data_cfg = new data_config; // TODO: Free this on close
+	default_data_config_init(USER_MAX_KEY_SIZE, splinter_data_cfg);
 
 	// Basic configuration of a SplinterDB instance
 	splinterdb_config splinterdb_cfg;
@@ -154,7 +154,7 @@ int DbWrap::openDB(int flags, int jsFlags, const char* path, char* keyBuffer, Co
 	splinterdb_cfg.filename	= path;
 	splinterdb_cfg.disk_size  = 1024*1024*1024;
 	splinterdb_cfg.cache_size = (64 * 1024 * 1024);
-	splinterdb_cfg.data_cfg	= &splinter_data_cfg;
+	splinterdb_cfg.data_cfg	= splinter_data_cfg;
 
 	this->db = NULL; // To a running SplinterDB instance
 
@@ -256,11 +256,13 @@ NAPI_FUNCTION(getTestRef) {
 
 Napi::Value DbWrap::beginTxn(const CallbackInfo& info) {
 	int flags = info[0].As<Number>();
-	transactional_splinterdb_begin(db, &txn);
+	int rc = transactional_splinterdb_begin(db, &txn);
+	return Number::New(info.Env(), rc);
 }
 Napi::Value DbWrap::commitTxn(const CallbackInfo& info) {
 //	TxnTracked *currentTxn = this->writeTxn;
-	transactional_splinterdb_commit(db, &txn);
+	int rc = transactional_splinterdb_commit(db, &txn);
+	return Number::New(info.Env(), rc);
 }
 transaction* DbWrap::getReadTxn(int64_t tw_address) {
 	transaction* txn;
@@ -292,7 +294,10 @@ int32_t DbWrap::doGetByBinary(uint32_t keySize, uint32_t ifNotTxnId, int64_t txn
 	transactional_splinterdb_lookup_result_init(db, &result, 0, NULL);
 
 	int rc = transactional_splinterdb_lookup(db, txn, key, &result);
-	rc = splinterdb_lookup_result_value(&result, &data);
+	if (splinterdb_lookup_found(&result))
+		rc = splinterdb_lookup_result_value(&result, &data);
+	else
+		rc = -30798;
 	if (rc) {
 		if (rc > 0)
 			return -rc;

@@ -90,8 +90,24 @@ describe('lmdb-js', function() {
 			return
 		}
 		it.only('simple put', async function() {
-			await db.put('key', 'value');
+			db.putSync('key', 'value');
 			await db.put('key', 'value2');
+			console.log(db.get('key'));
+			db.transactionSync(async () => {
+				console.log('start 1', db.get('key'))
+				await delay(500);
+				db.put('key', 'value3');
+				await delay(300);
+				console.log('done 1')
+			})/*
+			await db.transactionSync(async () => {
+				console.log('start 2', db.get('key'))
+				await delay(1000);
+				console.log('about to put 2', db.get('key'))
+				db.put('key', 'value4');
+				console.log('done 2')
+			})*/
+			console.log('done with txns')
 			console.log(db.get('key'));
 		});
 		it('will not open non-existent db with create disabled', function() {

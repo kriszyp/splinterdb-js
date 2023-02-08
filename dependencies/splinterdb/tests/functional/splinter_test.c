@@ -125,18 +125,17 @@ test_trunk_insert_thread(void *arg)
    uint64             op_granularity = params->op_granularity;
    uint64             thread_number  = params->thread_number;
    uint8              num_tables     = params->num_tables;
-
+   platform_heap_id   heap_id        = platform_get_heap_id();
    platform_assert(num_tables <= 8);
-   uint64 *insert_base =
-      TYPED_ARRAY_ZALLOC(platform_get_heap_id(), insert_base, num_tables);
-   uint8 done = 0;
+   uint64 *insert_base = TYPED_ARRAY_ZALLOC(heap_id, insert_base, num_tables);
+   uint8   done        = 0;
 
    uint64    num_inserts     = 0;
    timestamp next_check_time = platform_get_timestamp();
    // divide the per second insert rate into periods of 10 milli seconds.
    uint64            insert_rate = params->insert_rate / 100;
    merge_accumulator msg;
-   merge_accumulator_init(&msg, NULL);
+   merge_accumulator_init(&msg, heap_id);
 
    while (1) {
       for (uint8 spl_idx = 0; spl_idx < num_tables; spl_idx++) {
@@ -158,6 +157,9 @@ test_trunk_insert_thread(void *arg)
             goto out;
          }
       }
+
+      DECLARE_AUTO_KEY_BUFFER(keybuf, heap_id);
+
       for (uint64 op_offset = 0; op_offset != op_granularity; op_offset++) {
          for (uint8 spl_idx = 0; spl_idx < num_tables; spl_idx++) {
             uint64 insert_num = insert_base[spl_idx] + op_offset;
@@ -165,22 +167,23 @@ test_trunk_insert_thread(void *arg)
                continue;
             }
             trunk_handle *spl = spl_tables[spl_idx];
-            char          key[MAX_KEY_SIZE];
 
             timestamp ts;
             if (spl->cfg.use_stats) {
                ts = platform_get_timestamp();
             }
-            test_key(key,
+            test_key(&keybuf,
                      test_cfg[spl_idx].key_type,
                      insert_num,
                      thread_number,
                      test_cfg[spl_idx].semiseq_freq,
-                     trunk_key_size(spl),
+                     trunk_max_key_size(spl),
                      test_cfg[spl_idx].period);
             generate_test_message(test_cfg->gen, insert_num, &msg);
             platform_status rc =
-               trunk_insert(spl, key, merge_accumulator_to_message(&msg));
+               trunk_insert(spl,
+                            key_buffer_key(&keybuf),
+                            merge_accumulator_to_message(&msg));
             platform_assert_status_ok(rc);
             if (spl->cfg.use_stats) {
                ts = platform_timestamp_elapsed(ts);
@@ -195,7 +198,7 @@ test_trunk_insert_thread(void *arg)
                if (now <= next_check_time) {
                   num_inserts++;
                   if (num_inserts >= insert_rate) {
-                     platform_sleep(next_check_time - now);
+                     platform_sleep_ns(next_check_time - now);
                   }
                } else {
                   // reset and check again after 10 msec.
@@ -234,14 +237,14 @@ test_trunk_lookup_thread(void *arg)
    uint8              num_tables     = params->num_tables;
    verify_tuple_arg   vtarg          = {.expected_found = expected_found,
                                         .stats = &params->lookup_stats[ASYNC_LU]};
+   platform_heap_id   heap_id        = platform_get_heap_id();
 
    platform_assert(num_tables <= 8);
-   uint64 *lookup_base =
-      TYPED_ARRAY_ZALLOC(platform_get_heap_id(), lookup_base, num_tables);
-   uint8 done = 0;
+   uint64 *lookup_base = TYPED_ARRAY_ZALLOC(heap_id, lookup_base, num_tables);
+   uint8   done        = 0;
 
    merge_accumulator data;
-   merge_accumulator_init(&data, NULL);
+   merge_accumulator_init(&data, heap_id);
 
    while (1) {
       for (uint8 spl_idx = 0; spl_idx < num_tables; spl_idx++) {
@@ -263,6 +266,9 @@ test_trunk_lookup_thread(void *arg)
             goto out;
          }
       }
+
+      DECLARE_AUTO_KEY_BUFFER(keybuf, heap_id);
+
       for (uint64 op_offset = 0; op_offset != op_granularity; op_offset++) {
          uint8 spl_idx;
          for (spl_idx = 0; spl_idx < num_tables; spl_idx++) {
@@ -277,17 +283,16 @@ test_trunk_lookup_thread(void *arg)
 
             if (async_lookup->max_async_inflight == 0) {
                platform_status rc;
-               char            key[MAX_KEY_SIZE];
 
-               test_key(key,
+               test_key(&keybuf,
                         test_cfg[spl_idx].key_type,
                         lookup_num,
                         thread_number,
                         test_cfg[spl_idx].semiseq_freq,
-                        trunk_key_size(spl),
+                        trunk_max_key_size(spl),
                         test_cfg[spl_idx].period);
                ts = platform_get_timestamp();
-               rc = trunk_lookup(spl, key, &data);
+               rc = trunk_lookup(spl, key_buffer_key(&keybuf), &data);
                ts = platform_timestamp_elapsed(ts);
                if (ts > params->lookup_stats[SYNC_LU].latency_max) {
                   params->lookup_stats[SYNC_LU].latency_max = ts;
@@ -296,17 +301,17 @@ test_trunk_lookup_thread(void *arg)
                verify_tuple(spl,
                             test_cfg->gen,
                             lookup_num,
-                            key,
+                            key_buffer_key(&keybuf),
                             merge_accumulator_to_message(&data),
                             expected_found);
             } else {
                ctxt = test_async_ctxt_get(spl, async_lookup, &vtarg);
-               test_key(ctxt->key,
+               test_key(&ctxt->key,
                         test_cfg[spl_idx].key_type,
                         lookup_num,
                         thread_number,
                         test_cfg[spl_idx].semiseq_freq,
-                        trunk_key_size(spl),
+                        trunk_max_key_size(spl),
                         test_cfg[spl_idx].period);
                ctxt->lookup_num = lookup_num;
                async_ctxt_process_one(
@@ -335,7 +340,7 @@ out:
 }
 
 static void
-nop_tuple_func(slice key, message value, void *arg)
+nop_tuple_func(key tuple_key, message value, void *arg)
 {}
 
 /*
@@ -355,16 +360,18 @@ test_trunk_range_thread(void *arg)
    uint64             min_range_length = params->min_range_length;
    uint64             max_range_length = params->max_range_length;
    uint8              num_tables       = params->num_tables;
+   platform_heap_id   heap_id          = platform_get_heap_id();
 
    platform_assert(num_tables <= 8);
-   uint64 *range_base =
-      TYPED_ARRAY_ZALLOC(platform_get_heap_id(), range_base, num_tables);
-   uint8 done = 0;
+   uint64 *range_base = TYPED_ARRAY_ZALLOC(heap_id, range_base, num_tables);
+   uint8   done       = 0;
 
    bool verbose_progress  = test_show_verbose_progress(test_cfg->test_exec_cfg);
    uint64 test_start_time = platform_get_timestamp();
    uint64 start_time      = platform_get_timestamp();
    char   progress_msg[60];
+
+   DECLARE_AUTO_KEY_BUFFER(start_key, heap_id);
 
    while (1) {
       for (uint8 spl_idx = 0; spl_idx < num_tables; spl_idx++) {
@@ -417,19 +424,21 @@ test_trunk_range_thread(void *arg)
             }
             trunk_handle *spl = spl_tables[spl_idx];
 
-            char   start_key[MAX_KEY_SIZE];
             uint64 range_num = range_base[spl_idx] + op_offset;
-            test_key(start_key,
+            test_key(&start_key,
                      test_cfg[spl_idx].key_type,
                      range_num,
                      thread_number,
                      test_cfg[spl_idx].semiseq_freq,
-                     trunk_key_size(spl),
+                     trunk_max_key_size(spl),
                      test_cfg[spl_idx].period);
             uint64 range_tuples =
                test_range(range_num, min_range_length, max_range_length);
-            platform_status rc =
-               trunk_range(spl, start_key, range_tuples, nop_tuple_func, NULL);
+            platform_status rc = trunk_range(spl,
+                                             key_buffer_key(&start_key),
+                                             range_tuples,
+                                             nop_tuple_func,
+                                             NULL);
             platform_assert_status_ok(rc);
 
             params->range_lookups_done++;
@@ -556,8 +565,11 @@ do_operation(test_splinter_thread_params *params,
    uint8              num_tables     = params->num_tables;
    verify_tuple_arg   vtarg          = {.stats_only = TRUE,
                                         .stats      = &params->lookup_stats[ASYNC_LU]};
-   merge_accumulator  msg;
-   merge_accumulator_init(&msg, NULL);
+   platform_heap_id   heap_id        = platform_get_heap_id();
+
+   DECLARE_AUTO_KEY_BUFFER(keybuf, heap_id);
+   merge_accumulator msg;
+   merge_accumulator_init(&msg, heap_id);
 
    for (uint64 op_idx = op_offset; op_idx != op_offset + num_ops; op_idx++) {
       if (op_idx >= op_granularity) {
@@ -568,23 +580,24 @@ do_operation(test_splinter_thread_params *params,
          if (test_is_done(*done, spl_idx)) {
             continue;
          }
-         trunk_handle *spl = spl_tables[spl_idx];
-         char          key[MAX_KEY_SIZE];
+         trunk_handle *spl    = spl_tables[spl_idx];
          uint64        op_num = base[spl_idx] + op_idx;
          timestamp     ts;
 
          if (is_insert) {
-            test_key(key,
+            test_key(&keybuf,
                      test_cfg[spl_idx].key_type,
                      op_num,
                      thread_number,
                      test_cfg[spl_idx].semiseq_freq,
-                     trunk_key_size(spl),
+                     trunk_max_key_size(spl),
                      test_cfg[spl_idx].period);
             generate_test_message(test_cfg->gen, op_num, &msg);
             ts = platform_get_timestamp();
             platform_status rc =
-               trunk_insert(spl, key, merge_accumulator_to_message(&msg));
+               trunk_insert(spl,
+                            key_buffer_key(&keybuf),
+                            merge_accumulator_to_message(&msg));
             platform_assert_status_ok(rc);
             ts = platform_timestamp_elapsed(ts);
             params->insert_stats.duration += ts;
@@ -599,15 +612,15 @@ do_operation(test_splinter_thread_params *params,
                platform_status rc;
                bool            found;
 
-               test_key(key,
+               test_key(&keybuf,
                         test_cfg[spl_idx].key_type,
                         op_num,
                         thread_number,
                         test_cfg[spl_idx].semiseq_freq,
-                        trunk_key_size(spl),
+                        trunk_max_key_size(spl),
                         test_cfg[spl_idx].period);
                ts = platform_get_timestamp();
-               rc = trunk_lookup(spl, key, &msg);
+               rc = trunk_lookup(spl, key_buffer_key(&keybuf), &msg);
                platform_assert(SUCCESS(rc));
                ts = platform_timestamp_elapsed(ts);
                if (ts > params->lookup_stats[SYNC_LU].latency_max) {
@@ -621,12 +634,12 @@ do_operation(test_splinter_thread_params *params,
                }
             } else {
                ctxt = test_async_ctxt_get(spl, async_lookup, &vtarg);
-               test_key(ctxt->key,
+               test_key(&ctxt->key,
                         test_cfg[spl_idx].key_type,
                         op_num,
                         thread_number,
                         test_cfg[spl_idx].semiseq_freq,
-                        trunk_key_size(spl),
+                        trunk_max_key_size(spl),
                         test_cfg[spl_idx].period);
                ctxt->lookup_num = op_num;
                async_ctxt_process_one(
@@ -817,7 +830,7 @@ compute_per_table_inserts(uint64       *per_table_inserts, // OUT
    uint64 total_inserts   = 0;
 
    for (uint8 i = 0; i < num_tables; i++) {
-      tuple_size = cfg[i].data_cfg->key_size
+      tuple_size = cfg[i].data_cfg->max_key_size
                    + generator_average_message_size(test_cfg->gen);
       num_inserts = (num_inserts_cfg ? num_inserts_cfg
                                      : test_cfg[i].tree_size / tuple_size);
@@ -1476,7 +1489,7 @@ test_splinter_periodic(trunk_config    *cfg,
    uint64  total_inserts = 0;
 
    for (uint8 i = 0; i < num_tables; i++) {
-      tuple_size = cfg[i].data_cfg->key_size
+      tuple_size = cfg[i].data_cfg->max_key_size
                    + generator_average_message_size(test_cfg->gen);
       num_inserts = test_cfg[i].tree_size / tuple_size;
       if (test_cfg[i].key_type == TEST_PERIODIC) {
@@ -2156,7 +2169,7 @@ test_splinter_delete(trunk_config    *cfg,
    uint64  total_inserts = 0;
 
    for (uint8 i = 0; i < num_tables; i++) {
-      tuple_size = cfg[i].data_cfg->key_size
+      tuple_size = cfg[i].data_cfg->max_key_size
                    + generator_average_message_size(test_cfg->gen);
       num_inserts          = test_cfg[i].tree_size / tuple_size;
       per_table_inserts[i] = ROUNDUP(num_inserts, TEST_INSERT_GRANULARITY);
@@ -2370,9 +2383,7 @@ usage(const char *argv0)
       "\t%s --cache-per-table\n"
       "\t%s --parallel-perf --max-async-inflight [num] --num-pthreads [num] "
       "--lookup-positive-percent [num] --seed [num]\n"
-      "\t%s --num-bg-threads (number of background threads)\n"
       "\t%s --insert-rate (inserts_done_by_all_threads in a second)\n",
-      argv0,
       argv0,
       argv0,
       argv0,
@@ -2474,26 +2485,25 @@ splinter_test_parse_perf_args(char ***argv,
 int
 splinter_test(int argc, char *argv[])
 {
-   io_config           io_cfg;
-   rc_allocator_config al_cfg;
-   shard_log_config    log_cfg;
-   int                 config_argc;
-   char              **config_argv;
-   test_type           test;
-   platform_status     rc;
-   uint64              seed = 0;
-   uint64              test_ops;
-   uint64              correctness_check_frequency;
+   io_config          io_cfg;
+   allocator_config   al_cfg;
+   shard_log_config   log_cfg;
+   task_system_config task_cfg;
+   int                config_argc;
+   char             **config_argv;
+   test_type          test;
+   platform_status    rc;
+   uint64             seed = 0;
+   uint64             test_ops;
+   uint64             correctness_check_frequency;
    // Max async IOs inflight per-thread
-   uint32 num_insert_threads, num_lookup_threads;
-   uint32 num_range_lookup_threads, max_async_inflight;
-   uint32 num_pthreads    = 0;
-   uint8  num_tables      = 1;
-   bool   cache_per_table = FALSE;
-   // no bg threads by default.
-   uint8                  num_bg_threads[NUM_TASK_TYPES] = {0};
-   uint64                 insert_rate = 0; // no rate throttling by default.
-   task_system           *ts;
+   uint32                 num_insert_threads, num_lookup_threads;
+   uint32                 num_range_lookup_threads, max_async_inflight;
+   uint32                 num_pthreads    = 0;
+   uint8                  num_tables      = 1;
+   bool                   cache_per_table = FALSE;
+   uint64                 insert_rate     = 0; // no rate throttling by default.
+   task_system           *ts              = NULL;
    uint8                  lookup_positive_pct = 0;
    test_message_generator gen;
    test_exec_config       test_exec_cfg;
@@ -2589,6 +2599,7 @@ splinter_test(int argc, char *argv[])
       config_argc -= 2;
       config_argv += 2;
    }
+
    if (config_argc > 0
        && strncmp(
              config_argv[0], "--cache-per-table", sizeof("--cache-per-table"))
@@ -2598,33 +2609,7 @@ splinter_test(int argc, char *argv[])
       config_argc -= 1;
       config_argv += 1;
    }
-   if (config_argc > 0
-       && strncmp(
-             config_argv[0], "--num-bg-threads", sizeof("--num-bg-threads"))
-             == 0)
-   {
-      if (!try_string_to_uint8(config_argv[1],
-                               &num_bg_threads[TASK_TYPE_NORMAL])) {
-         usage(argv[0]);
-         return -1;
-      }
-      config_argc -= 2;
-      config_argv += 2;
-   }
-   if (config_argc > 0
-       && strncmp(config_argv[0],
-                  "--num-memtable-bg-threads",
-                  sizeof("--num-bg-threads"))
-             == 0)
-   {
-      if (!try_string_to_uint8(config_argv[1],
-                               &num_bg_threads[TASK_TYPE_MEMTABLE])) {
-         usage(argv[0]);
-         return -1;
-      }
-      config_argc -= 2;
-      config_argv += 2;
-   }
+
    if (splinter_test_parse_perf_args(&config_argv,
                                      &config_argc,
                                      &max_async_inflight,
@@ -2711,6 +2696,7 @@ splinter_test(int argc, char *argv[])
                           &al_cfg,
                           cache_cfg,
                           &log_cfg,
+                          &task_cfg,
                           &test_exec_cfg,
                           &gen,
                           num_tables,
@@ -2744,13 +2730,8 @@ splinter_test(int argc, char *argv[])
    uint32 total_threads =
       MAX(num_lookup_threads, MAX(num_insert_threads, num_pthreads));
 
-   if (num_bg_threads[TASK_TYPE_NORMAL] != 0
-       && num_bg_threads[TASK_TYPE_MEMTABLE] == 0)
-   {
-      num_bg_threads[TASK_TYPE_MEMTABLE] = num_tables;
-   }
    for (task_type type = 0; type != NUM_TASK_TYPES; type++) {
-      total_threads += num_bg_threads[type];
+      total_threads += task_cfg.num_background_threads[type];
    }
    // Check if IO subsystem has enough reqs for max async IOs inflight
    if (io_cfg.async_queue_size < total_threads * max_async_inflight) {
@@ -2772,10 +2753,7 @@ splinter_test(int argc, char *argv[])
       goto io_free;
    }
 
-   bool use_bg_threads = num_bg_threads[TASK_TYPE_NORMAL] != 0;
-
-   rc = test_init_task_system(
-      hid, io, &ts, splinter_cfg->use_stats, use_bg_threads, num_bg_threads);
+   rc = test_init_task_system(hid, io, &ts, &task_cfg);
    if (!SUCCESS(rc)) {
       platform_error_log("Failed to init splinter state: %s\n",
                          platform_status_to_string(rc));
@@ -2874,7 +2852,10 @@ splinter_test(int argc, char *argv[])
          platform_assert(SUCCESS(rc));
          break;
       case parallel_perf:
-         platform_assert(max_async_inflight == 0 || use_bg_threads);
+         platform_assert(
+            max_async_inflight == 0
+            || (0 < task_cfg.num_background_threads[TASK_TYPE_MEMTABLE]
+                && 0 < task_cfg.num_background_threads[TASK_TYPE_NORMAL]));
          rc = test_splinter_parallel_perf(splinter_cfg,
                                           test_cfg,
                                           alp,

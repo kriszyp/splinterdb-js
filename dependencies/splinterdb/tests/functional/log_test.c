@@ -38,8 +38,7 @@ test_log_crash(clockcache             *cc,
    platform_status    rc;
    log_handle        *logh;
    uint64             i;
-   char               keybuffer[MAX_KEY_SIZE];
-   slice              returned_key;
+   key                returned_key;
    message            returned_message;
    uint64             addr;
    uint64             magic;
@@ -49,6 +48,7 @@ test_log_crash(clockcache             *cc,
    char               data_str[128];
    bool               at_end;
    merge_accumulator  msg;
+   DECLARE_AUTO_KEY_BUFFER(keybuffer, hid);
 
    platform_assert(cc != NULL);
    rc = shard_log_init(log, (cache *)cc, cfg);
@@ -61,9 +61,14 @@ test_log_crash(clockcache             *cc,
    merge_accumulator_init(&msg, hid);
 
    for (i = 0; i < num_entries; i++) {
-      test_key(keybuffer, TEST_RANDOM, i, 0, 0, cfg->data_cfg->key_size, 0);
+      key skey = test_key(&keybuffer,
+                          TEST_RANDOM,
+                          i,
+                          0,
+                          0,
+                          1 + (i % cfg->data_cfg->max_key_size),
+                          0);
       generate_test_message(gen, i, &msg);
-      slice skey = slice_create(1 + (i % cfg->data_cfg->key_size), keybuffer);
       log_write(logh, skey, merge_accumulator_to_message(&msg), i);
    }
 
@@ -80,12 +85,17 @@ test_log_crash(clockcache             *cc,
 
    iterator_at_end(itorh, &at_end);
    for (i = 0; i < num_entries && !at_end; i++) {
-      test_key(keybuffer, TEST_RANDOM, i, 0, 0, cfg->data_cfg->key_size, 0);
+      key skey = test_key(&keybuffer,
+                          TEST_RANDOM,
+                          i,
+                          0,
+                          0,
+                          1 + (i % cfg->data_cfg->max_key_size),
+                          0);
       generate_test_message(gen, i, &msg);
-      slice   skey = slice_create(1 + (i % cfg->data_cfg->key_size), keybuffer);
       message mmessage = merge_accumulator_to_message(&msg);
       iterator_get_curr(itorh, &returned_key, &returned_message);
-      if (slice_lex_cmp(skey, returned_key)
+      if (data_key_compare(cfg->data_cfg, skey, returned_key)
           || message_lex_cmp(mmessage, returned_message))
       {
          platform_default_log("log_test_basic: key or data mismatch\n");
@@ -102,6 +112,8 @@ test_log_crash(clockcache             *cc,
    }
 
    platform_default_log("log returned %lu of %lu entries\n", i, num_entries);
+
+   merge_accumulator_deinit(&msg);
 
    shard_log_iterator_deinit(hid, &itor);
    shard_log_zap(log);
@@ -128,17 +140,19 @@ test_log_thread(void *arg)
    uint64                  num_entries = params->num_entries;
    test_message_generator *gen         = params->gen;
    uint64                  i;
-   char                    key[MAX_KEY_SIZE];
    merge_accumulator       msg;
+   DECLARE_AUTO_KEY_BUFFER(keybuf, hid);
 
-   slice skey = slice_create(log->cfg->data_cfg->key_size, key);
    merge_accumulator_init(&msg, hid);
 
    for (i = thread_id * num_entries; i < (thread_id + 1) * num_entries; i++) {
-      test_key(key, TEST_RANDOM, i, 0, 0, log->cfg->data_cfg->key_size, 0);
+      key skey = test_key(
+         &keybuf, TEST_RANDOM, i, 0, 0, log->cfg->data_cfg->max_key_size, 0);
       generate_test_message(gen, i, &msg);
       log_write(logh, skey, merge_accumulator_to_message(&msg), i);
    }
+
+   merge_accumulator_deinit(&msg);
 }
 
 platform_status
@@ -219,9 +233,10 @@ log_test(int argc, char *argv[])
    platform_status        status;
    data_config           *data_cfg;
    io_config              io_cfg;
-   rc_allocator_config    al_cfg;
+   allocator_config       al_cfg;
    clockcache_config      cache_cfg;
    shard_log_config       log_cfg;
+   task_system_config     task_cfg;
    rc_allocator           al;
    platform_status        ret;
    int                    config_argc;
@@ -230,7 +245,7 @@ log_test(int argc, char *argv[])
    bool                   run_crash_test;
    int                    rc;
    uint64                 seed;
-   task_system           *ts;
+   task_system           *ts = NULL;
    test_message_generator gen;
 
    if (argc > 1 && strncmp(argv[1], "--perf", sizeof("--perf")) == 0) {
@@ -258,7 +273,8 @@ log_test(int argc, char *argv[])
    status = platform_heap_create(platform_get_module_id(), 1 * GiB, &hh, &hid);
    platform_assert_status_ok(status);
 
-   trunk_config *cfg = TYPED_MALLOC(hid, cfg);
+   trunk_config *cfg                            = TYPED_MALLOC(hid, cfg);
+   uint64        num_bg_threads[NUM_TASK_TYPES] = {0}; // no bg threads
 
    status = test_parse_args(cfg,
                             &data_cfg,
@@ -266,8 +282,11 @@ log_test(int argc, char *argv[])
                             &al_cfg,
                             &cache_cfg,
                             &log_cfg,
+                            &task_cfg,
                             &seed,
                             &gen,
+                            &num_bg_threads[TASK_TYPE_MEMTABLE],
+                            &num_bg_threads[TASK_TYPE_NORMAL],
                             config_argc,
                             config_argv);
    if (!SUCCESS(status)) {
@@ -290,10 +309,7 @@ log_test(int argc, char *argv[])
       goto free_iohandle;
    }
 
-   uint8 num_bg_threads[NUM_TASK_TYPES] = {0}; // no bg threads
-
-   status = test_init_task_system(
-      hid, io, &ts, cfg->use_stats, FALSE, num_bg_threads);
+   status = test_init_task_system(hid, io, &ts, &task_cfg);
    if (!SUCCESS(status)) {
       platform_error_log("Failed to init splinter state: %s\n",
                          platform_status_to_string(status));

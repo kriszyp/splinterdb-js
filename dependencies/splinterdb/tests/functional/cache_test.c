@@ -31,7 +31,7 @@ test_cache_page_pin(cache *cc, page_handle **page_arr, uint64 page_capacity)
    for (uint64 curr_page = 0; curr_page < page_capacity; curr_page++) {
       page_handle *page =
          cache_get(cc, page_arr[curr_page]->disk_addr, TRUE, PAGE_TYPE_MISC);
-      cache_claim(cc, page);
+      cache_try_claim(cc, page);
       cache_lock(cc, page);
       cache_pin(cc, page);
       cache_unlock(cc, page);
@@ -65,7 +65,7 @@ cache_test_alloc_extents(cache             *cc,
                          uint64             addr_arr[],
                          uint32             extents_to_allocate)
 {
-   allocator *al               = cache_allocator(cc);
+   allocator *al               = cache_get_allocator(cc);
    uint64     page_size        = cache_config_page_size(&cfg->super);
    uint64     pages_per_extent = cache_config_pages_per_extent(&cfg->super);
    platform_status rc;
@@ -177,7 +177,7 @@ test_cache_basic(cache *cc, clockcache_config *cfg, platform_heap_id hid)
       uint32 i;
       for (i = 0; i < cfg->page_capacity; i++) {
          page_arr[i] = cache_get(cc, addr_arr[j + i], TRUE, PAGE_TYPE_MISC);
-         bool claim_obtained = cache_claim(cc, page_arr[i]);
+         bool claim_obtained = cache_try_claim(cc, page_arr[i]);
          if (!claim_obtained) {
             platform_error_log("Expected uncontested claim, but failed\n");
             rc = STATUS_TEST_FAILED;
@@ -222,7 +222,7 @@ test_cache_basic(cache *cc, clockcache_config *cfg, platform_heap_id hid)
       uint32 i;
       for (i = 0; i < cfg->page_capacity; i++) {
          page_arr[i] = cache_get(cc, addr_arr[j + i], TRUE, PAGE_TYPE_MISC);
-         bool claim_obtained = cache_claim(cc, page_arr[i]);
+         bool claim_obtained = cache_try_claim(cc, page_arr[i]);
          if (!claim_obtained) {
             platform_error_log("Expected uncontested claim, but failed\n");
             rc = STATUS_TEST_FAILED;
@@ -268,10 +268,10 @@ test_cache_basic(cache *cc, clockcache_config *cfg, platform_heap_id hid)
     */
    for (uint32 i = 0; i < extents_to_allocate; i++) {
       uint64     addr = addr_arr[i * pages_per_extent];
-      allocator *al   = cache_allocator(cc);
+      allocator *al   = cache_get_allocator(cc);
       uint8      ref  = allocator_dec_ref(al, addr, PAGE_TYPE_MISC);
       platform_assert(ref == AL_NO_REFS);
-      cache_hard_evict_extent(cc, addr, PAGE_TYPE_MISC);
+      cache_extent_discard(cc, addr, PAGE_TYPE_MISC);
       ref = allocator_dec_ref(al, addr, PAGE_TYPE_MISC);
       platform_assert(ref == AL_FREE);
    }
@@ -410,7 +410,7 @@ cache_test_dirty_flush(cache                 *cc,
    for (uint32 i = 0; i < cfg->page_capacity; i++) {
       const uint32 idx = cache_test_index_itor_get(itor);
       page_handle *ph  = cache_get(cc, addr_arr[idx], TRUE, PAGE_TYPE_MISC);
-      bool         claim_obtained = cache_claim(cc, ph);
+      bool         claim_obtained = cache_try_claim(cc, ph);
       if (!claim_obtained) {
          platform_error_log("Expected uncontested claim, but failed\n");
          rc = STATUS_TEST_FAILED;
@@ -545,10 +545,10 @@ test_cache_flush(cache             *cc,
     */
    for (uint32 i = 0; i < extents_to_allocate; i++) {
       uint64     addr = addr_arr[i * pages_per_extent];
-      allocator *al   = cache_allocator(cc);
+      allocator *al   = cache_get_allocator(cc);
       uint8      ref  = allocator_dec_ref(al, addr, PAGE_TYPE_MISC);
       platform_assert(ref == AL_NO_REFS);
-      cache_hard_evict_extent(cc, addr, PAGE_TYPE_MISC);
+      cache_extent_discard(cc, addr, PAGE_TYPE_MISC);
       ref = allocator_dec_ref(al, addr, PAGE_TYPE_MISC);
       platform_assert(ref == AL_FREE);
    }
@@ -798,7 +798,7 @@ test_writer_thread(void *arg)
       }
       do {
          handle_arr[i] = cache_get(cc, addr_arr[i], TRUE, PAGE_TYPE_MISC);
-         if (cache_claim(cc, handle_arr[i])) {
+         if (cache_try_claim(cc, handle_arr[i])) {
             break;
          }
          cache_unget(cc, handle_arr[i]);
@@ -931,10 +931,10 @@ test_cache_async(cache             *cc,
    // Deallocate all the entries.
    for (uint32 i = 0; i < extents_to_allocate; i++) {
       uint64     addr = addr_arr[i * pages_per_extent];
-      allocator *al   = cache_allocator(cc);
+      allocator *al   = cache_get_allocator(cc);
       uint8      ref  = allocator_dec_ref(al, addr, PAGE_TYPE_MISC);
       platform_assert(ref == AL_NO_REFS);
-      cache_hard_evict_extent(cc, addr, PAGE_TYPE_MISC);
+      cache_extent_discard(cc, addr, PAGE_TYPE_MISC);
       ref = allocator_dec_ref(al, addr, PAGE_TYPE_MISC);
       platform_assert(ref == AL_FREE);
    }
@@ -960,13 +960,14 @@ cache_test(int argc, char *argv[])
 {
    data_config           *data_cfg;
    io_config              io_cfg;
-   rc_allocator_config    al_cfg;
+   allocator_config       al_cfg;
    clockcache_config      cache_cfg;
    shard_log_config       log_cfg;
+   task_system_config     task_cfg;
    int                    config_argc = argc - 1;
    char                 **config_argv = argv + 1;
    platform_status        rc;
-   task_system           *ts;
+   task_system           *ts        = NULL;
    bool                   benchmark = FALSE, async = FALSE;
    uint64                 seed;
    test_message_generator gen;
@@ -994,6 +995,7 @@ cache_test(int argc, char *argv[])
    rc = platform_heap_create(platform_get_module_id(), 1 * GiB, &hh, &hid);
    platform_assert_status_ok(rc);
 
+   uint64        num_bg_threads[NUM_TASK_TYPES] = {0}; // no bg threads
    trunk_config *splinter_cfg = TYPED_MALLOC(hid, splinter_cfg);
 
    rc = test_parse_args(splinter_cfg,
@@ -1002,8 +1004,11 @@ cache_test(int argc, char *argv[])
                         &al_cfg,
                         &cache_cfg,
                         &log_cfg,
+                        &task_cfg,
                         &seed,
                         &gen,
+                        &num_bg_threads[TASK_TYPE_MEMTABLE],
+                        &num_bg_threads[TASK_TYPE_NORMAL],
                         config_argc,
                         config_argv);
    if (!SUCCESS(rc)) {
@@ -1033,10 +1038,7 @@ cache_test(int argc, char *argv[])
       goto free_iohandle;
    }
 
-   uint8 num_bg_threads[NUM_TASK_TYPES] = {0}; // no bg threads
-
-   rc = test_init_task_system(
-      hid, io, &ts, splinter_cfg->use_stats, FALSE, num_bg_threads);
+   rc = test_init_task_system(hid, io, &ts, &task_cfg);
    if (!SUCCESS(rc)) {
       platform_error_log("Failed to init splinter state: %s\n",
                          platform_status_to_string(rc));

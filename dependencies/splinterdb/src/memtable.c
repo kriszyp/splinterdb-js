@@ -57,14 +57,14 @@ memtable_maybe_rotate_and_get_insert_lock(memtable_context *ctxt,
       if (mt->state != MEMTABLE_STATE_READY) {
          // The next memtable is not ready yet, back off and wait.
          cache_unget(cc, *lock_page);
-         platform_sleep(wait);
+         platform_sleep_ns(wait);
          wait = wait > 2048 ? wait : 2 * wait;
          continue;
       }
 
       if (memtable_is_full(&ctxt->cfg, &ctxt->mt[mt_no])) {
          // If the current memtable is full, try to retire it.
-         if (cache_claim(cc, *lock_page)) {
+         if (cache_try_claim(cc, *lock_page)) {
             // We successfully got the claim, so we do the finalization
             cache_lock(cc, *lock_page);
             memtable_transition(
@@ -78,7 +78,7 @@ memtable_maybe_rotate_and_get_insert_lock(memtable_context *ctxt,
             memtable_process(ctxt, process_generation);
          } else {
             cache_unget(cc, *lock_page);
-            platform_sleep(wait);
+            platform_sleep_ns(wait);
             wait *= 2;
          }
          continue;
@@ -116,13 +116,12 @@ platform_status
 memtable_insert(memtable_context *ctxt,
                 memtable         *mt,
                 platform_heap_id  heap_id,
-                const char       *key,
+                key               tuple_key,
                 message           msg,
                 uint64           *leaf_generation)
 {
    const threadid tid = platform_get_tid();
    bool           was_unique;
-   slice          key_slice = slice_create(mt->cfg->data_cfg->key_size, key);
 
    platform_status rc = btree_insert(ctxt->cc,
                                      ctxt->cfg.btree_cfg,
@@ -130,7 +129,7 @@ memtable_insert(memtable_context *ctxt,
                                      &ctxt->scratch[tid],
                                      mt->root_addr,
                                      &mt->mini,
-                                     key_slice,
+                                     tuple_key,
                                      msg,
                                      leaf_generation,
                                      &was_unique);
@@ -169,7 +168,7 @@ memtable_uncontended_get_claim_lock_lookup_lock(memtable_context *ctxt)
 {
    page_handle *lock_page = memtable_get_lookup_lock(ctxt);
    cache       *cc        = ctxt->cc;
-   bool         claimed   = cache_claim(cc, lock_page);
+   bool         claimed   = cache_try_claim(cc, lock_page);
    platform_assert(claimed);
    cache_lock(cc, lock_page);
    return lock_page;
@@ -215,9 +214,9 @@ memtable_force_finalize(memtable_context *ctxt)
    page_handle *lock_page =
       cache_get(cc, lock_addr, TRUE, PAGE_TYPE_LOCK_NO_DATA);
    uint64 wait = 100;
-   while (!cache_claim(cc, lock_page)) {
+   while (!cache_try_claim(cc, lock_page)) {
       cache_unget(cc, lock_page);
-      platform_sleep(wait);
+      platform_sleep_ns(wait);
       wait *= 2;
       lock_page = cache_get(cc, lock_addr, TRUE, PAGE_TYPE_LOCK_NO_DATA);
    }
@@ -251,7 +250,7 @@ memtable_init(memtable *mt, cache *cc, memtable_config *cfg, uint64 generation)
 void
 memtable_deinit(cache *cc, memtable *mt)
 {
-   mini_release(&mt->mini, NULL_SLICE);
+   mini_release(&mt->mini, NULL_KEY);
    debug_only bool freed =
       btree_dec_ref(cc, mt->cfg, mt->root_addr, PAGE_TYPE_MEMTABLE);
    debug_assert(freed);
@@ -270,7 +269,7 @@ memtable_context_create(platform_heap_id hid,
    memmove(&ctxt->cfg, cfg, sizeof(ctxt->cfg));
 
    uint64          base_addr;
-   allocator      *al = cache_allocator(cc);
+   allocator      *al = cache_get_allocator(cc);
    platform_status rc = allocator_alloc(al, &base_addr, PAGE_TYPE_LOCK_NO_DATA);
    platform_assert_status_ok(rc);
 
@@ -324,11 +323,11 @@ memtable_context_destroy(platform_heap_id hid, memtable_context *ctxt)
     * lookup lock and insert lock share extents but not pages.
     * this deallocs both.
     */
-   allocator *al = cache_allocator(cc);
+   allocator *al = cache_get_allocator(cc);
    uint8      ref =
       allocator_dec_ref(al, ctxt->insert_lock_addr, PAGE_TYPE_LOCK_NO_DATA);
    platform_assert(ref == AL_NO_REFS);
-   cache_hard_evict_extent(cc, ctxt->insert_lock_addr, PAGE_TYPE_LOCK_NO_DATA);
+   cache_extent_discard(cc, ctxt->insert_lock_addr, PAGE_TYPE_LOCK_NO_DATA);
    ref = allocator_dec_ref(al, ctxt->insert_lock_addr, PAGE_TYPE_LOCK_NO_DATA);
    platform_assert(ref == AL_FREE);
 

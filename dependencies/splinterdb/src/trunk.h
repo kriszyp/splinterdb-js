@@ -7,8 +7,7 @@
  *     This file contains the interface for SplinterDB.
  */
 
-#ifndef __TRUNK_H
-#define __TRUNK_H
+#pragma once
 
 #include "splinterdb/data.h"
 #include "btree.h"
@@ -63,6 +62,8 @@ typedef struct trunk_config {
    uint64 target_leaf_kv_bytes; // make leaves this big when splitting
    uint64 reclaim_threshold;    // start reclaming space when
                                 // free space < threshold
+   uint64 queue_scale_percent;  // Governs when inserters perform bg tasks.  See
+                                // task.h
    bool            use_stats;   // stats
    memtable_config mt_cfg;
    btree_config    btree_cfg;
@@ -229,12 +230,11 @@ typedef struct trunk_range_iterator {
    uint64          memtable_end_gen;
    bool            compacted[TRUNK_RANGE_ITOR_MAX_BRANCHES];
    merge_iterator *merge_itor;
-   bool            has_max_key;
    bool            at_end;
-   char            min_key[MAX_KEY_SIZE];
-   char            max_key[MAX_KEY_SIZE];
-   char            local_max_key[MAX_KEY_SIZE];
-   char            rebuild_key[MAX_KEY_SIZE];
+   key_buffer      min_key;
+   key_buffer      max_key;
+   key_buffer      local_max_key;
+   key_buffer      rebuild_key;
    btree_iterator  btree_itor[TRUNK_RANGE_ITOR_MAX_BRANCHES];
    trunk_branch    branch[TRUNK_RANGE_ITOR_MAX_BRANCHES];
 
@@ -276,6 +276,15 @@ struct trunk_subbundle;
 
 typedef void (*trunk_async_cb)(struct trunk_async_ctxt *ctxt);
 
+struct trunk_hdr;
+typedef struct trunk_hdr trunk_hdr;
+
+typedef struct trunk_node {
+   uint64       addr;
+   page_handle *page;
+   trunk_hdr   *hdr;
+} trunk_node;
+
 typedef struct trunk_async_ctxt {
    trunk_async_cb cb; // IN: callback (requeues ctxt
                       // for dispatch)
@@ -283,7 +292,7 @@ typedef struct trunk_async_ctxt {
    trunk_async_state prev_state;   // state machine's previous state
    trunk_async_state state;        // state machine's current state
    page_handle      *mt_lock_page; // Memtable lock page
-   page_handle      *trunk_node;   // Current trunk node
+   trunk_node        trunk_node;   // Current trunk node
    uint16            height;       // height of trunk_node
 
    uint16 sb_no;     // subbundle number (newest)
@@ -311,17 +320,6 @@ typedef struct trunk_async_ctxt {
    cache_async_ctxt cache_ctxt; // Async cache context
 } trunk_async_ctxt;
 
-/*
- * Tests usually allocate a number of pivot keys.
- * Since we can't use VLAs, it's easier to allocate an array of a struct
- * than to malloc a 2d array which requires a loop of some kind (or math to
- * dereference)
- * Define a struct for a key of max size.
- */
-typedef struct {
-   char k[MAX_KEY_SIZE];
-} key_buffer;
-
 
 /*
  *----------------------------------------------------------------------
@@ -332,10 +330,10 @@ typedef struct {
  */
 
 platform_status
-trunk_insert(trunk_handle *spl, char *key, message data);
+trunk_insert(trunk_handle *spl, key tuple_key, message data);
 
 platform_status
-trunk_lookup(trunk_handle *spl, char *key, merge_accumulator *result);
+trunk_lookup(trunk_handle *spl, key target, merge_accumulator *result);
 
 static inline bool
 trunk_lookup_found(merge_accumulator *result)
@@ -345,22 +343,22 @@ trunk_lookup_found(merge_accumulator *result)
 
 cache_async_result
 trunk_lookup_async(trunk_handle      *spl,
-                   char              *key,
+                   key                target,
                    merge_accumulator *data,
                    trunk_async_ctxt  *ctxt);
 platform_status
 trunk_range_iterator_init(trunk_handle         *spl,
                           trunk_range_iterator *range_itor,
-                          const char           *min_key,
-                          const char           *max_key,
+                          key                   min_key,
+                          key                   max_key,
                           uint64                num_tuples);
 void
 trunk_range_iterator_deinit(trunk_range_iterator *range_itor);
 
-typedef void (*tuple_function)(slice key, message value, void *arg);
+typedef void (*tuple_function)(key tuple_key, message value, void *arg);
 platform_status
 trunk_range(trunk_handle  *spl,
-            const char    *start_key,
+            key            start_key,
             uint64         num_tuples,
             tuple_function func,
             void          *arg);
@@ -404,7 +402,7 @@ trunk_print_super_block(platform_log_handle *log_handle, trunk_handle *spl);
 
 void
 trunk_print_lookup(trunk_handle        *spl,
-                   const char          *key,
+                   key                  target,
                    platform_log_handle *log_handle);
 void
 trunk_print_branches(platform_log_handle *log_handle, trunk_handle *spl);
@@ -416,34 +414,21 @@ bool
 trunk_verify_tree(trunk_handle *spl);
 
 static inline uint64
-trunk_key_size(trunk_handle *spl)
+trunk_max_key_size(trunk_handle *spl)
 {
-   return spl->cfg.data_cfg->key_size;
-}
-
-static inline slice
-trunk_key_slice(trunk_handle *spl, const char *key)
-{
-   if (key) {
-      return slice_create(trunk_key_size(spl), key);
-   } else {
-      return NULL_SLICE;
-   }
+   return spl->cfg.data_cfg->max_key_size;
 }
 
 static inline int
-trunk_key_compare(trunk_handle *spl, const char *key1, const char *key2)
+trunk_key_compare(trunk_handle *spl, key key1, key key2)
 {
-   slice key1_slice = trunk_key_slice(spl, key1);
-   slice key2_slice = trunk_key_slice(spl, key2);
-   return btree_key_compare(&spl->cfg.btree_cfg, key1_slice, key2_slice);
+   return btree_key_compare(&spl->cfg.btree_cfg, key1, key2);
 }
 
 static inline void
-trunk_key_to_string(trunk_handle *spl, const char *key, char str[static 128])
+trunk_key_to_string(trunk_handle *spl, key key_to_print, char str[static 128])
 {
-   slice key_slice = slice_create(trunk_key_size(spl), key);
-   btree_key_to_string(&spl->cfg.btree_cfg, key_slice, str);
+   btree_key_to_string(&spl->cfg.btree_cfg, key_to_print, str);
 }
 
 static inline void
@@ -461,15 +446,12 @@ trunk_async_ctxt_init(trunk_async_ctxt *ctxt, trunk_async_cb cb)
 }
 
 uint64
-trunk_pivot_size(trunk_handle *spl);
-
-uint64
 trunk_pivot_message_size();
 
 uint64
 trunk_hdr_size();
 
-void
+platform_status
 trunk_config_init(trunk_config        *trunk_cfg,
                   cache_config        *cache_cfg,
                   data_config         *data_cfg,
@@ -481,11 +463,10 @@ trunk_config_init(trunk_config        *trunk_cfg,
                   uint64               filter_remainder_size,
                   uint64               filter_index_size,
                   uint64               reclaim_threshold,
+                  uint64               queue_scale_percent,
                   bool                 use_log,
                   bool                 use_stats,
                   bool                 verbose_logging,
                   platform_log_handle *log_handle);
 size_t
 trunk_get_scratch_size();
-
-#endif // __TRUNK_H

@@ -672,8 +672,7 @@ export function addReadMethods(LMDBStore, {
 				readTxn.onlyCursor = true;
 				lastReadTxnRef = new WeakRef(readTxn);
 				readTxn = null;
-			} else
-				resetTxn(readTxn.address);
+			}
 		}
 	}
 }
