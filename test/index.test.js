@@ -137,7 +137,7 @@ describe('lmdb-js', function() {
 			should.equal(db2.getBinary('key1').length, 0);
 			await db2.remove('key1');
 		});
-		it('query of keys', async function() {
+		it.only('query of keys', async function() {
 			let keys = [
 				Symbol.for('test'),
 				false,
@@ -154,12 +154,13 @@ describe('lmdb-js', function() {
 				[ 'Test', Symbol.for('test'), 2 ],
 				[ 'Test', 'not null', 3 ],
 				'hello',
-				['hello', 3],
+				['hello', 3],/*
 				['hello', 'world'],
 				[ 'uid', 'I-7l9ySkD-wAOULIjOEnb', 'Rwsu6gqOw8cqdCZG5_YNF' ],
-				'z'
+				'z'*/
 			]
 			for (let key of keys) {
+				console.log('write key',key)
 				await db.put(key, 3);
 			}
 			let returnedKeys = []

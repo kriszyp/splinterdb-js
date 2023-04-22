@@ -226,16 +226,7 @@ cleanup(async function (err) {
     suite.on('complete', async function () {
         console.log('Fastest is ' + this.filter('fastest').map('name'));
         return
-        var numCPUs = require('os').cpus().length;
-        console.log('Test opening/closing threads ' + numCPUs + ' threads');
-        for (var i = 0; i < numCPUs; i++) {
-          var worker = new Worker(__filename);
-          await new Promise(r => setTimeout(r,30));
-          worker.terminate();
-          if ((i % 2) == 0)
-            await new Promise(r => setTimeout(r,30));
-          //var worker = fork();
-        }
+        var numCPUs = 4;//require('os').cpus().length;
         console.log('Now will run benchmark across ' + numCPUs + ' threads');
         for (var i = 0; i < numCPUs; i++) {
           var worker = new Worker(__filename);

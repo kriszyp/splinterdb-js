@@ -137,7 +137,7 @@ const int THEAD_MEMORY_THRESHOLD = 4000;
 
 class TxnWrap;
 class DbWrap;
-class CursorWrap;
+class IteratorWrap;
 class Compression;
 
 // Exports misc stuff to the module
@@ -192,7 +192,7 @@ Napi::Value throwError(Napi::Env env, const char* message);
 
 class TxnWrap;
 class DbWrap;
-class CursorWrap;
+class IteratorWrap;
 class SharedEnv {
   public:
 	transactional_splinterdb* env;
@@ -279,7 +279,7 @@ private:
 	// Cleans up stray transactions
 	void cleanupStrayTxns();
 	void consolidateTxns();
-   static void cleanupDbWraps(void* data);
+	static void cleanupDbWraps(void* data);
 
 	friend class TxnWrap;
 
@@ -376,7 +376,7 @@ private:
 	// Flags used with transaction_begin
 	unsigned int flags;
 
-	friend class CursorWrap;
+	friend class IteratorWrap;
 	friend class DbWrap;
 
 public:
@@ -440,11 +440,11 @@ public:
 };
 
 /*
-	`Cursor`
+	`Iterator`
 	Represents a cursor instance that is assigned to a transaction and a database instance
 	(Wrapper for `splinterdb_iterator`)
 */
-class CursorWrap : public ObjectWrap<CursorWrap> {
+class IteratorWrap : public ObjectWrap<IteratorWrap> {
 
 private:
 
@@ -462,11 +462,11 @@ public:
 	transaction *txn;
 
 	// The wrapped object
-	CursorWrap(splinterdb_iterator* cursor);
-	CursorWrap(const CallbackInfo& info);
-	~CursorWrap();
+	IteratorWrap(splinterdb_iterator* cursor);
+	IteratorWrap(const CallbackInfo& info);
+	~IteratorWrap();
 
-	// Sets up exports for the Cursor constructor
+	// Sets up exports for the Iterator constructor
 	static void setupExports(Napi::Env env, Object exports);
 
 	/*

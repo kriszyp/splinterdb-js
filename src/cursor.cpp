@@ -12,7 +12,7 @@ const int EXACT_MATCH = 0x4000;
 const int INCLUSIVE_END = 0x8000;
 const int EXCLUSIVE_START = 0x10000;
 
-CursorWrap::CursorWrap(const CallbackInfo& info) : Napi::ObjectWrap<CursorWrap>(info) {
+IteratorWrap::IteratorWrap(const CallbackInfo& info) : Napi::ObjectWrap<IteratorWrap>(info) {
 	this->keyType = LmdbKeyType::StringKey;
 	this->freeKey = nullptr;
 	this->endKey.length = 0; // indicates no end key (yet)
@@ -24,61 +24,61 @@ CursorWrap::CursorWrap(const CallbackInfo& info) : Napi::ObjectWrap<CursorWrap>(
 	DbWrap *dw;
 	napi_unwrap(info.Env(), info[0], (void**)&dw);
 
-	// Open the cursor
-	MDB_cursor *cursor;
+	// Open the iterator
+	splinterdb_iterator *iterator;
 	transaction *txn = dw->ew->getReadTxn();
-	int rc = mdb_cursor_open(txn, dw->dbi, &cursor);
+	int rc = splinterdb_iterator_init(txn, dw->db->kvsb, &iterator);
 	if (rc != 0) {
 		throwLmdbError(info.Env(), rc);
 		return;
 	}
 	info.This().As<Object>().Set("address", Number::New(info.Env(), (size_t) this));
-	this->cursor = cursor;
+	this->iterator = iterator;
 	this->dw = dw;
 	this->txn = txn;
 	this->keyType = keyType;
 }
 
-CursorWrap::~CursorWrap() {
-	if (this->cursor) {
-		// Don't close cursor here, it is possible that the environment may already be closed, which causes it to crash
-		//mdb_cursor_close(this->cursor);
+IteratorWrap::~IteratorWrap() {
+	if (this->iterator) {
+		// Don't close iterator here, it is possible that the environment may already be closed, which causes it to crash
+		//splinterdb_iterator_close(this->iterator);
 	}
 	if (this->freeKey) {
 		this->freeKey(this->key);
 	}
 }
 
-Value CursorWrap::close(const CallbackInfo& info) {
-	if (!this->cursor) {
-	  return throwError(info.Env(), "cursor.close: Attempt to close a closed cursor!");
+Value IteratorWrap::close(const CallbackInfo& info) {
+	if (!this->iterator) {
+	  return throwError(info.Env(), "iterator.close: Attempt to close a closed iterator!");
 	}
-	mdb_cursor_close(this->cursor);
-	this->cursor = nullptr;
+	splinterdb_iterator_close(this->iterator);
+	this->iterator = nullptr;
 	return info.Env().Undefined();
 }
 
-Value CursorWrap::del(const CallbackInfo& info) {
+Value IteratorWrap::del(const CallbackInfo& info) {
 	int flags = 0;
 
 	if (info.Length() == 1) {
 		if (!info[0].IsObject()) {
-			return throwError(info.Env(), "cursor.del: Invalid options argument. It should be an object.");
+			return throwError(info.Env(), "iterator.del: Invalid options argument. It should be an object.");
 		}
 		
 		auto options = info[0].As<Object>();
-		setFlagFromValue(&flags, MDB_NODUPDATA, "noDupData", false, options);
+		setFlagFromValue(&flags, splinterdb_NODUPDATA, "noDupData", false, options);
 	}
 
-	int rc = mdb_cursor_del(this->cursor, flags);
+	int rc = splinterdb_iterator_del(this->iterator, flags);
 	if (rc != 0) {
 		return throwLmdbError(info.Env(), rc);
 	}
 	return info.Env().Undefined();
 }
-int CursorWrap::returnEntry(int lastRC, slice &key, slice &data) {
+int IteratorWrap::returnEntry(int lastRC, slice &key, slice &data) {
 	if (lastRC) {
-		if (lastRC == MDB_NOTFOUND)
+		if (lastRC == splinterdb_NOTFOUND)
 			return 0;
 		else {
 			return lastRC > 0 ? -lastRC : lastRC;
@@ -87,9 +87,9 @@ int CursorWrap::returnEntry(int lastRC, slice &key, slice &data) {
 	if (endKey.length > 0) {
 		int comparison;
 		if (flags & VALUES_FOR_KEY)
-			comparison = mdb_dcmp(txn, dw->dbi, &endKey, &data);
+			comparison = splinterdb_dcmp(txn, dw->dbi, &endKey, &data);
 		else
-			comparison = mdb_cmp(txn, dw->dbi, &endKey, &key);
+			comparison = splinterdb_cmp(txn, dw->dbi, &endKey, &key);
 		if ((flags & REVERSE) ? comparison >= 0 : (comparison <= 0)) {
 			if (!((flags & INCLUSIVE_END) && comparison == 0))
 				return 0;
@@ -118,12 +118,12 @@ int CursorWrap::returnEntry(int lastRC, slice &key, slice &data) {
 }
 
 const int START_ADDRESS_POSITION = 4064;
-int32_t CursorWrap::doPosition(uint32_t offset, uint32_t keySize, uint64_t endKeyAddress) {
+int32_t IteratorWrap::doPosition(uint32_t offset, uint32_t keySize, uint64_t endKeyAddress) {
 	//char* keyBuffer = dw->ew->keyBuffer;
 	slice key, data;
 	int rc;
 	if (flags & RENEW_CURSOR) { // TODO: check the txn_id to determine if we need to renew
-		rc = mdb_cursor_renew(txn = dw->ew->getReadTxn(), cursor);
+		rc = splinterdb_iterator_renew(txn = dw->ew->getReadTxn(), iterator);
 		if (rc) {
 			if (rc > 0)
 				rc = -rc;
@@ -138,15 +138,15 @@ int32_t CursorWrap::doPosition(uint32_t offset, uint32_t keySize, uint64_t endKe
 		endKey.length = 0;
 	iteratingOp = (flags & REVERSE) ?
 		(flags & INCLUDE_VALUES) ?
-			(flags & VALUES_FOR_KEY) ? MDB_PREV_DUP : MDB_PREV :
-			MDB_PREV_NODUP :
+			(flags & VALUES_FOR_KEY) ? splinterdb_PREV_DUP : splinterdb_PREV :
+			splinterdb_PREV_NODUP :
 		(flags & INCLUDE_VALUES) ?
-			(flags & VALUES_FOR_KEY) ? MDB_NEXT_DUP : MDB_NEXT :
-			MDB_NEXT_NODUP;
+			(flags & VALUES_FOR_KEY) ? splinterdb_NEXT_DUP : splinterdb_NEXT :
+			splinterdb_NEXT_NODUP;
 	key.length = keySize;
 	key.data = dw->ew->keyBuffer;
 	if (keySize == 0) {
-		rc = mdb_cursor_get(cursor, &key, &data, flags & REVERSE ? MDB_LAST : MDB_FIRST);  
+		rc = splinterdb_iterator_get(iterator, &key, &data, flags & REVERSE ? splinterdb_LAST : splinterdb_FIRST);  
 	} else {
 		if (flags & VALUES_FOR_KEY) { // only values for this key
 			// take the next part of the key buffer as a pointer to starting data
@@ -158,38 +158,38 @@ int32_t CursorWrap::doPosition(uint32_t offset, uint32_t keySize, uint64_t endKe
 				startValue = data; // save it for comparison
 			if (flags & REVERSE) {// reverse through values
 				startValue = data; // save it for comparison
-				rc = mdb_cursor_get(cursor, &key, &data, data.length ? MDB_GET_BOTH_RANGE : MDB_SET_KEY);
+				rc = splinterdb_iterator_get(iterator, &key, &data, data.length ? splinterdb_GET_BOTH_RANGE : splinterdb_SET_KEY);
 				if (rc) {
 					if (startValue.length) {
 						// value specified, but not found, so find key and go to last item
-						rc = mdb_cursor_get(cursor, &key, &data, MDB_SET_KEY);
+						rc = splinterdb_iterator_get(iterator, &key, &data, splinterdb_SET_KEY);
 						if (!rc)
-							rc = mdb_cursor_get(cursor, &key, &data, MDB_LAST_DUP);
+							rc = splinterdb_iterator_get(iterator, &key, &data, splinterdb_LAST_DUP);
 					} // else just couldn't find the key
 				} else { // found entry
 					if (startValue.length == 0) // no value specified, so go to last value
-						rc = mdb_cursor_get(cursor, &key, &data, MDB_LAST_DUP);
-					else if (mdb_dcmp(txn, dw->dbi, &startValue, &data)) // the range found the next value *after* the start
-						rc = mdb_cursor_get(cursor, &key, &data, MDB_PREV_DUP);
+						rc = splinterdb_iterator_get(iterator, &key, &data, splinterdb_LAST_DUP);
+					else if (splinterdb_dcmp(txn, dw->dbi, &startValue, &data)) // the range found the next value *after* the start
+						rc = splinterdb_iterator_get(iterator, &key, &data, splinterdb_PREV_DUP);
 				}
 			} else // forward, just do a get by range
-				rc = mdb_cursor_get(cursor, &key, &data, data.length ?
-					(flags & EXACT_MATCH) ? MDB_GET_BOTH : MDB_GET_BOTH_RANGE : MDB_SET_KEY);
+				rc = splinterdb_iterator_get(iterator, &key, &data, data.length ?
+					(flags & EXACT_MATCH) ? splinterdb_GET_BOTH : splinterdb_GET_BOTH_RANGE : splinterdb_SET_KEY);
 
-			if (rc == MDB_NOTFOUND)
+			if (rc == splinterdb_NOTFOUND)
 				return 0;
 			if (flags & ONLY_COUNT && (!endKeyAddress || (flags & EXACT_MATCH))) {
 				size_t count;
-				rc = mdb_cursor_count(cursor, &count);
+				rc = splinterdb_iterator_count(iterator, &count);
 				if (rc)
 					return rc > 0 ? -rc : rc;
 				return count;
 			}
 			if (flags & EXCLUSIVE_START) {
 				while(!rc) {
-					if (mdb_dcmp(txn, dw->dbi, &startValue, &data))
+					if (splinterdb_dcmp(txn, dw->dbi, &startValue, &data))
 						break;
-					rc = mdb_cursor_get(cursor, &key, &data, iteratingOp);
+					rc = splinterdb_iterator_get(iterator, &key, &data, iteratingOp);
 				}
 			}
 		} else {
@@ -198,41 +198,41 @@ int32_t CursorWrap::doPosition(uint32_t offset, uint32_t keySize, uint64_t endKe
 				firstKey = key; // save it for comparison
 			if (flags & REVERSE) {// reverse
 				firstKey = key; // save it for comparison
-				rc = mdb_cursor_get(cursor, &key, &data, MDB_SET_RANGE);
+				rc = splinterdb_iterator_get(iterator, &key, &data, splinterdb_SET_RANGE);
 				if (rc)
-					rc = mdb_cursor_get(cursor, &key, &data, MDB_LAST);
-				else if (mdb_cmp(txn, dw->dbi, &firstKey, &key)) // the range found the next entry *after* the start
-					rc = mdb_cursor_get(cursor, &key, &data, MDB_PREV);
-				else if (dw->flags & MDB_DUPSORT)
+					rc = splinterdb_iterator_get(iterator, &key, &data, splinterdb_LAST);
+				else if (splinterdb_cmp(txn, dw->dbi, &firstKey, &key)) // the range found the next entry *after* the start
+					rc = splinterdb_iterator_get(iterator, &key, &data, splinterdb_PREV);
+				else if (dw->flags & splinterdb_DUPSORT)
 					// we need to go to the last value of this key
-					rc = mdb_cursor_get(cursor, &key, &data, MDB_LAST_DUP);
+					rc = splinterdb_iterator_get(iterator, &key, &data, splinterdb_LAST_DUP);
 			} else // forward, just do a get by range
-				rc = mdb_cursor_get(cursor, &key, &data, (flags & EXACT_MATCH) ? MDB_SET_KEY : MDB_SET_RANGE);
+				rc = splinterdb_iterator_get(iterator, &key, &data, (flags & EXACT_MATCH) ? splinterdb_SET_KEY : splinterdb_SET_RANGE);
 			if (flags & EXCLUSIVE_START) {
 				while(!rc) {
-					if (mdb_cmp(txn, dw->dbi, &firstKey, &key))
+					if (splinterdb_cmp(txn, dw->dbi, &firstKey, &key))
 						break;
-					rc = mdb_cursor_get(cursor, &key, &data, iteratingOp);
+					rc = splinterdb_iterator_get(iterator, &key, &data, iteratingOp);
 				}
 			}
 		}
 	}
 
 	while (offset-- > 0 && !rc) {
-		rc = mdb_cursor_get(cursor, &key, &data, iteratingOp);
+		rc = splinterdb_iterator_get(iterator, &key, &data, iteratingOp);
 	}
 	if (flags & ONLY_COUNT) {
 		uint32_t count = 0;
-		bool useCursorCount = false;
+		bool useIteratorCount = false;
 		// if we are in a dupsort database, and we are iterating over all entries, we can just count all the values for each key
-		if (dw->flags & MDB_DUPSORT) {
-			if (iteratingOp == MDB_PREV) {
-				iteratingOp = MDB_PREV_NODUP;
-				useCursorCount = true;
+		if (dw->flags & splinterdb_DUPSORT) {
+			if (iteratingOp == splinterdb_PREV) {
+				iteratingOp = splinterdb_PREV_NODUP;
+				useIteratorCount = true;
 			}
-			if (iteratingOp == MDB_NEXT) {
-				iteratingOp = MDB_NEXT_NODUP;
-				useCursorCount = true;
+			if (iteratingOp == splinterdb_NEXT) {
+				iteratingOp = splinterdb_NEXT_NODUP;
+				useIteratorCount = true;
 			}
 		}
 
@@ -240,17 +240,17 @@ int32_t CursorWrap::doPosition(uint32_t offset, uint32_t keySize, uint64_t endKe
 			if (endKey.length > 0) {
 				int comparison;
 				if (flags & VALUES_FOR_KEY)
-					comparison = mdb_dcmp(txn, dw->dbi, &endKey, &data);
+					comparison = splinterdb_dcmp(txn, dw->dbi, &endKey, &data);
 				else
-					comparison = mdb_cmp(txn, dw->dbi, &endKey, &key);
+					comparison = splinterdb_cmp(txn, dw->dbi, &endKey, &key);
 				if ((flags & REVERSE) ? comparison >= 0 : (comparison <=0)) {
 					if (!((flags & INCLUSIVE_END) && comparison == 0))
 						return count;
 				}
 			}
-			if (useCursorCount) {
+			if (useIteratorCount) {
 				size_t countForKey;
-				rc = mdb_cursor_count(cursor, &countForKey);
+				rc = splinterdb_iterator_count(iterator, &countForKey);
 				if (rc) {
 					if (rc > 0)
 						rc = -rc;
@@ -259,7 +259,7 @@ int32_t CursorWrap::doPosition(uint32_t offset, uint32_t keySize, uint64_t endKe
 				count += countForKey;
 			} else
 				count++;
-			rc = mdb_cursor_get(cursor, &key, &data, iteratingOp);
+			rc = splinterdb_iterator_get(iterator, &key, &data, iteratingOp);
 		}
 		return count;
 	}
@@ -269,7 +269,7 @@ int32_t CursorWrap::doPosition(uint32_t offset, uint32_t keySize, uint64_t endKe
 NAPI_FUNCTION(position) {
 	ARGS(5)
     GET_INT64_ARG(0);
-    CursorWrap* cw = (CursorWrap*) i64;
+    IteratorWrap* cw = (IteratorWrap*) i64;
 	GET_UINT32_ARG(cw->flags, 1);
 	uint32_t offset;
 	GET_UINT32_ARG(offset, 2);
@@ -281,7 +281,7 @@ NAPI_FUNCTION(position) {
 	RETURN_INT32(result);
 }
 int32_t positionFFI(double cwPointer, uint32_t flags, uint32_t offset, uint32_t keySize, uint64_t endKeyAddress) {
-	CursorWrap* cw = (CursorWrap*) (size_t) cwPointer;
+	IteratorWrap* cw = (IteratorWrap*) (size_t) cwPointer;
 	DbWrap* dw = cw->dw;
 	dw->getFast = true;
 	cw->flags = flags;
@@ -291,18 +291,18 @@ int32_t positionFFI(double cwPointer, uint32_t flags, uint32_t offset, uint32_t 
 NAPI_FUNCTION(iterate) {
 	ARGS(1)
     GET_INT64_ARG(0);
-    CursorWrap* cw = (CursorWrap*) i64;
+    IteratorWrap* cw = (IteratorWrap*) i64;
 	slice key, data;
-	int rc = mdb_cursor_get(cw->cursor, &key, &data, cw->iteratingOp);
+	int rc = splinterdb_iterator_get(cw->iterator, &key, &data, cw->iteratingOp);
 	RETURN_INT32(cw->returnEntry(rc, key, data));
 }
 
 int32_t iterateFFI(double cwPointer) {
-	CursorWrap* cw = (CursorWrap*) (size_t) cwPointer;
+	IteratorWrap* cw = (IteratorWrap*) (size_t) cwPointer;
 	DbWrap* dw = cw->dw;
 	dw->getFast = true;
 	slice key, data;
-	int rc = mdb_cursor_get(cw->cursor, &key, &data, cw->iteratingOp);
+	int rc = splinterdb_iterator_get(cw->iterator, &key, &data, cw->iteratingOp);
 	return cw->returnEntry(rc, key, data);
 }
 
@@ -310,43 +310,43 @@ int32_t iterateFFI(double cwPointer) {
 NAPI_FUNCTION(getCurrentValue) {
 	ARGS(1)
     GET_INT64_ARG(0);
-    CursorWrap* cw = (CursorWrap*) i64;
+    IteratorWrap* cw = (IteratorWrap*) i64;
 	slice key, data;
-	int rc = mdb_cursor_get(cw->cursor, &key, &data, MDB_GET_CURRENT);
+	int rc = splinterdb_iterator_get(cw->iterator, &key, &data, splinterdb_GET_CURRENT);
 	RETURN_INT32(cw->returnEntry(rc, key, data));
 }
 
-napi_finalize noopCursor = [](napi_env, void *, void *) {
-	// Data belongs to LMDB, we shouldn't free it here
+napi_finalize noopIterator = [](napi_env, void *, void *) {
+	// Data belongs to Lsplinterdb, we shouldn't free it here
 };
 NAPI_FUNCTION(getCurrentShared) {
 	ARGS(1)
     GET_INT64_ARG(0);
-    CursorWrap* cw = (CursorWrap*) i64;
+    IteratorWrap* cw = (IteratorWrap*) i64;
 	slice key, data;
-	int rc = mdb_cursor_get(cw->cursor, &key, &data, MDB_GET_CURRENT);
+	int rc = splinterdb_iterator_get(cw->iterator, &key, &data, splinterdb_GET_CURRENT);
 	if (rc)
 		RETURN_INT32(cw->returnEntry(rc, key, data));
 	getVersionAndUncompress(data, cw->dw);
 	napi_create_external_buffer(env, data.length,
-		(char*) data.data, noopCursor, nullptr, &returnValue);
+		(char*) data.data, noopIterator, nullptr, &returnValue);
 	return returnValue;
 }
 
 NAPI_FUNCTION(renew) {
 	ARGS(1)
     GET_INT64_ARG(0);
-    CursorWrap* cw = (CursorWrap*) i64;
-	mdb_cursor_renew(cw->txn = cw->dw->ew->getReadTxn(), cw->cursor);
+    IteratorWrap* cw = (IteratorWrap*) i64;
+	splinterdb_iterator_renew(cw->txn = cw->dw->ew->getReadTxn(), cw->iterator);
 	RETURN_UNDEFINED;
 }
 
-void CursorWrap::setupExports(Napi::Env env, Object exports) {
-	// CursorWrap: Prepare constructor template
-	Function CursorClass = DefineClass(env, "Cursor", {
-	// CursorWrap: Add functions to the prototype
-		CursorWrap::InstanceMethod("close", &CursorWrap::close),
-		CursorWrap::InstanceMethod("del", &CursorWrap::del),
+void IteratorWrap::setupExports(Napi::Env env, Object exports) {
+	// IteratorWrap: Prepare constructor template
+	Function IteratorClass = DefineClass(env, "Iterator", {
+	// IteratorWrap: Add functions to the prototype
+		IteratorWrap::InstanceMethod("close", &IteratorWrap::close),
+		IteratorWrap::InstanceMethod("del", &IteratorWrap::del),
 	});
 	EXPORT_NAPI_FUNCTION("position", position);
 	EXPORT_NAPI_FUNCTION("iterate", iterate);
@@ -356,9 +356,9 @@ void CursorWrap::setupExports(Napi::Env env, Object exports) {
 	EXPORT_FUNCTION_ADDRESS("positionPtr", positionFFI);
 	EXPORT_FUNCTION_ADDRESS("iteratePtr", iterateFFI);
 
-	exports.Set("Cursor", CursorClass);
+	exports.Set("Iterator", IteratorClass);
 
-//	cursorTpl->InstanceTemplate()->SetInternalFieldCount(1);
+//	iteratorTpl->InstanceTemplate()->SetInternalFieldCount(1);
 }
 
 // This file contains code from the node-lmdb project
